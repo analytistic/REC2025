@@ -60,17 +60,20 @@ class FlashMultiHeadAttention(torch.nn.Module):
         # 最终的线性变换
         output = self.out_linear(attn_output)
 
-        return output, None
+        if self.training:
+            return output, None
+        else:
+            return output, attn_output
 
 
 class PointWiseFeedForward(torch.nn.Module):
-    def __init__(self, hidden_units, dropout_rate):
+    def __init__(self, hidden_units, dropout_rate, dff):
         super(PointWiseFeedForward, self).__init__()
 
-        self.conv1 = torch.nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
+        self.conv1 = torch.nn.Conv1d(hidden_units, dff, kernel_size=1)
         self.dropout1 = torch.nn.Dropout(p=dropout_rate)
         self.relu = torch.nn.ReLU()
-        self.conv2 = torch.nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
+        self.conv2 = torch.nn.Conv1d(dff, hidden_units, kernel_size=1)
         self.dropout2 = torch.nn.Dropout(p=dropout_rate)
 
     def forward(self, inputs):
@@ -136,8 +139,8 @@ class BaselineModel(torch.nn.Module):
             + args.hidden_units * len(self.ITEM_EMB_FEAT)
         )
 
-        self.userdnn = torch.nn.Linear(userdim, args.hidden_units)
-        self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units)
+        self.userdnn = torch.nn.Linear(userdim, args.hidden_units, bias=False)
+        self.itemdnn = torch.nn.Linear(itemdim, args.hidden_units, bias=False)
 
         self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
 
@@ -153,7 +156,7 @@ class BaselineModel(torch.nn.Module):
             new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             self.forward_layernorms.append(new_fwd_layernorm)
 
-            new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
+            new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate, args.dff)
             self.forward_layers.append(new_fwd_layer)
 
         for k in self.USER_SPARSE_FEAT:
@@ -323,7 +326,15 @@ class BaselineModel(torch.nn.Module):
         seqs = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
         seqs *= self.item_emb.embedding_dim**0.5
         poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
+
         poss *= log_seqs != 0
+        poss_bias = torch.argmax((mask.to(self.dev) == 1).int(), dim=1).expand(maxlen, -1).T.clone()
+        poss_bias += -1
+        poss_bias *= log_seqs != 0
+        poss -= poss_bias
+        
+        
+        
         seqs += self.pos_emb(poss)
         seqs = self.emb_dropout(seqs)
 

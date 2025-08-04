@@ -12,6 +12,10 @@ from tqdm import tqdm
 from dataset import MyTestDataset, save_emb
 from model import BaselineModel
 
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
+
 
 def get_ckpt_path():
     ckpt_path = os.environ.get("MODEL_OUTPUT_PATH")
@@ -201,3 +205,6 @@ def infer():
     top10s = [top10s_untrimmed[i : i + 10] for i in range(0, len(top10s_untrimmed), 10)]
 
     return top10s, user_list
+
+if __name__ == "__main__":
+    top10s, user_list = infer()

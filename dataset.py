@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from tqdm import tqdm
+from time import time
 
 
 class MyDataset(torch.utils.data.Dataset):
@@ -111,7 +112,7 @@ class MyDataset(torch.utils.data.Dataset):
             pos_feat: 正样本特征，每个元素为字典，key为特征ID，value为特征值
             neg_feat: 负样本特征，每个元素为字典，key为特征ID，value为特征值
         """
-        print(f"DEBUG: __getitem__ called with uid={uid}")  # 调试输出
+
         user_sequence = self._load_user_data(uid)  # 动态加载用户数据
         
         ext_user_sequence = []  
@@ -267,10 +268,11 @@ class MyDataset(torch.utils.data.Dataset):
         return filled_feat
 
     @staticmethod
-    def collate_fn(batch):
+    def collate_fn(batch, feature_default_value=None, down_sample_window=None):
         """
         Args:
             batch: 多个__getitem__返回的数据
+            down_sample_window: 滑动窗口大小列表，例如[10, 15, 20]表示对每个序列生成这三种窗口大小的子序列
 
         Returns:
             seq: 用户序列ID, torch.Tensor形式
@@ -278,21 +280,181 @@ class MyDataset(torch.utils.data.Dataset):
             neg: 负样本ID, torch.Tensor形式
             token_type: 用户序列类型, torch.Tensor形式
             next_token_type: 下一个token类型, torch.Tensor形式
+            next_action_type: 下一个动作类型, torch.Tensor形式
             seq_feat: 用户序列特征, list形式
             pos_feat: 正样本特征, list形式
             neg_feat: 负样本特征, list形式
         """
         seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = zip(*batch)
-        seq = torch.from_numpy(np.array(seq))
-        pos = torch.from_numpy(np.array(pos))
-        neg = torch.from_numpy(np.array(neg))
-        token_type = torch.from_numpy(np.array(token_type))
-        next_token_type = torch.from_numpy(np.array(next_token_type))
-        next_action_type = torch.from_numpy(np.array(next_action_type))
-        seq_feat = list(seq_feat)
-        pos_feat = list(pos_feat)
-        neg_feat = list(neg_feat)
-        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+        
+        time_generate = 0.0
+        if down_sample_window is None or len(down_sample_window) == 0:
+            # 不进行滑动窗口采样，直接返回原始数据
+            seq = torch.from_numpy(np.array(seq))
+            pos = torch.from_numpy(np.array(pos))
+            neg = torch.from_numpy(np.array(neg))
+            token_type = torch.from_numpy(np.array(token_type))
+            next_token_type = torch.from_numpy(np.array(next_token_type))
+            next_action_type = torch.from_numpy(np.array(next_action_type))
+            seq_feat = list(seq_feat)
+            pos_feat = list(pos_feat)
+            neg_feat = list(neg_feat)
+        else:
+            time_generate_start = time()
+            # 使用NumPy矩阵机制进行多窗口大小的滑动窗口处理
+            seq_tmp = np.array(seq)
+            pos_tmp = np.array(pos)
+            neg_tmp = np.array(neg)
+            token_type_tmp = np.array(token_type)
+            next_token_type_tmp = np.array(next_token_type)
+            next_action_type_tmp = np.array(next_action_type)
+            
+            batch_size = len(seq)
+            seq_len = seq_tmp.shape[1]
+            
+            # 1. 批量计算所有序列的有效长度
+            # 找到每个序列的item [batch_size, seq_len]
+            valid_mask = (token_type_tmp == 1)
+            
+            # 计算每个序列的有效长度 [batch_size]
+            valid_lengths = np.sum(valid_mask, axis=1)
+            
+            # 过滤掉太短的序列（有效长度需要大于最小窗口大小）
+            min_window_size = min(down_sample_window)
+            valid_seq_mask = valid_lengths >= min_window_size
+            
+            if not np.any(valid_seq_mask):
+                # 如果没有有效序列，返回原始数据
+                seq = torch.from_numpy(seq_tmp)
+                pos = torch.from_numpy(pos_tmp) 
+                neg = torch.from_numpy(neg_tmp)
+                token_type = torch.from_numpy(token_type_tmp)
+                next_token_type = torch.from_numpy(next_token_type_tmp)
+                next_action_type = torch.from_numpy(next_action_type_tmp)
+                seq_feat = list(seq_feat)
+                pos_feat = list(pos_feat)
+                neg_feat = list(neg_feat)
+                return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_generate
+            
+            # 2. 为每个窗口大小预计算所有序列的可生成子序列数量
+            valid_indices = np.where(valid_seq_mask)[0]
+            window_sizes = np.array(down_sample_window)  # [num_windows]
+            
+            # 收集所有生成的子序列
+            batch_seq = []
+            batch_pos = []
+            batch_neg = []
+            batch_token_type = []
+            batch_next_token_type = []
+            batch_next_action_type = []
+            batch_seq_feat = []
+            batch_pos_feat = []
+            batch_neg_feat = []
+
+            
+            # 3. 为每个有效序列和每个窗口大小生成滑动窗口子序列
+            for batch_idx in valid_indices:
+
+
+                batch_seq.append(seq_tmp[batch_idx])
+                batch_pos.append(pos_tmp[batch_idx])
+                batch_neg.append(neg_tmp[batch_idx])
+                batch_token_type.append(token_type_tmp[batch_idx])
+                batch_next_token_type.append(next_token_type_tmp[batch_idx])
+                batch_next_action_type.append(next_action_type_tmp[batch_idx])
+                batch_seq_feat.append(seq_feat[batch_idx])
+                batch_pos_feat.append(pos_feat[batch_idx])
+                batch_neg_feat.append(neg_feat[batch_idx])
+
+                # 获取当前序列的有效位置
+                valid_positions = np.where(valid_mask[batch_idx])[0]
+                seq_valid_length = len(valid_positions)
+                
+                # 对每个窗口大小进行处理
+                for window_size in window_sizes:
+                    if window_size > seq_valid_length:
+                        continue  # 窗口大小超过序列长度，跳过
+                    
+                    # 计算当前窗口大小的步长和可生成的子序列数量
+                    step_size = max(1, window_size // 2)
+                    max_start_idx = seq_valid_length - window_size
+                    
+                    # 生成起点索引数组：[0, step_size, 2*step_size, ...]
+                    num_subseqs = (max_start_idx // step_size) + 1
+                    start_indices = np.arange(num_subseqs) * step_size
+                    # 确保不会超出有效范围
+                    start_indices = start_indices[start_indices <= max_start_idx]
+                    
+                    # 使用矩阵操作批量生成当前窗口大小的所有子序列
+                    for start_idx in start_indices:
+                        end_idx = start_idx + window_size
+                        
+                        # 创建新的子序列（初始化为零）
+                        new_seq = np.zeros_like(seq_tmp[batch_idx])
+                        new_pos = np.zeros_like(pos_tmp[batch_idx])
+                        new_neg = np.zeros_like(neg_tmp[batch_idx])
+                        new_token_type = np.zeros_like(token_type_tmp[batch_idx])
+                        new_next_token_type = np.zeros_like(next_token_type_tmp[batch_idx])
+                        new_next_action_type = np.zeros_like(next_action_type_tmp[batch_idx])
+                        new_seq_feat = np.full_like(seq_feat[batch_idx], None, dtype=object)
+                        new_pos_feat = np.full_like(pos_feat[batch_idx], None, dtype=object)
+                        new_neg_feat = np.full_like(neg_feat[batch_idx], None, dtype=object)
+                        
+                        # 使用left-padding方式正确填充子序列（参考__getitem__的做法）
+                        window_positions = valid_positions[start_idx:end_idx]
+                        
+
+                        
+                        # 从窗口的最后一个元素开始，向前填充
+                        new_seq[-(len(window_positions)):] = seq_tmp[batch_idx][window_positions]
+                        new_pos[-(len(window_positions)):] = pos_tmp[batch_idx][window_positions]
+                        new_neg[-(len(window_positions)):] = neg_tmp[batch_idx][window_positions]
+                        new_token_type[-(len(window_positions)):] = token_type_tmp[batch_idx][window_positions]
+                        new_next_token_type[-(len(window_positions)):] = next_token_type_tmp[batch_idx][window_positions]
+                        new_next_action_type[-(len(window_positions)):] = next_action_type_tmp[batch_idx][window_positions]
+                        new_seq_feat[-(len(window_positions)):] = seq_feat[batch_idx][window_positions]
+                        new_pos_feat[-(len(window_positions)):] = pos_feat[batch_idx][window_positions]
+                        new_neg_feat[-(len(window_positions)):] = neg_feat[batch_idx][window_positions]
+                        
+                        new_seq[-(len(window_positions)+1)] = seq_tmp[batch_idx][valid_positions[0]-1]
+                        new_pos[-(len(window_positions)+1)] = new_seq[-(len(window_positions))]
+                        new_neg[-(len(window_positions)+1)] = neg_tmp[batch_idx][valid_positions[0]-1]
+                        new_token_type[-(len(window_positions)+1)] = token_type_tmp[batch_idx][valid_positions[0]-1]
+                        new_next_token_type[-(len(window_positions)+1)] = new_token_type[-(len(window_positions))]
+                        new_next_action_type[-(len(window_positions)+1)] = next_action_type_tmp[batch_idx][window_positions[0]-1]
+                        new_seq_feat[-(len(window_positions)+1)] = seq_feat[batch_idx][valid_positions[0]-1]
+                        new_pos_feat[-(len(window_positions)+1)] = new_seq_feat[-(len(window_positions))]
+                        new_neg_feat[-(len(window_positions)+1)] = neg_feat[batch_idx][valid_positions[0]-1]
+                        new_seq_feat[:-(len(window_positions)+1)] = feature_default_value
+                        new_pos_feat[:-(len(window_positions)+1)] = feature_default_value
+                        new_neg_feat[:-(len(window_positions)+1)] = feature_default_value
+
+
+                        # 添加到新batch
+                        batch_seq.append(new_seq)
+                        batch_pos.append(new_pos)
+                        batch_neg.append(new_neg)
+                        batch_token_type.append(new_token_type)
+                        batch_next_token_type.append(new_next_token_type)
+                        batch_next_action_type.append(new_next_action_type)
+                        batch_seq_feat.append(new_seq_feat)
+                        batch_pos_feat.append(new_pos_feat)
+                        batch_neg_feat.append(new_neg_feat)
+            
+            # 转换为torch tensor
+            seq = torch.from_numpy(np.array(batch_seq))
+            pos = torch.from_numpy(np.array(batch_pos))
+            neg = torch.from_numpy(np.array(batch_neg))
+            token_type = torch.from_numpy(np.array(batch_token_type))
+            next_token_type = torch.from_numpy(np.array(batch_next_token_type))
+            next_action_type = torch.from_numpy(np.array(batch_next_action_type))
+            seq_feat = batch_seq_feat
+            pos_feat = batch_pos_feat
+            neg_feat = batch_neg_feat
+            
+            time_generate_end = time()
+            time_generate = time_generate_end - time_generate_start
+        return seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_generate
 
 
 class MyTestDataset(MyDataset):

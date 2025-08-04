@@ -14,8 +14,20 @@ from dataset import MyDataset
 from model import BaselineModel
 from utils.metrics import evaluate_ndcg10_hr10
 from dotenv import load_dotenv
+import random
+
+from functools import partial
 
 load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # 如果用多卡
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -36,6 +48,7 @@ def get_args():
     parser.add_argument('--inference_only', action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
     parser.add_argument('--norm_first', action='store_true')
+    parser.add_argument('--dff', default=64, type=int)
 
     # MMemb Feature ID
     parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
@@ -46,6 +59,8 @@ def get_args():
 
 
 if __name__ == '__main__':
+
+    set_seed(42)
     Path(os.environ.get('TRAIN_LOG_PATH')).mkdir(parents=True, exist_ok=True)
     Path(os.environ.get('TRAIN_TF_EVENTS_PATH')).mkdir(parents=True, exist_ok=True)
     log_file = open(Path(os.environ.get('TRAIN_LOG_PATH'), 'train.log'), 'w')
@@ -59,10 +74,10 @@ if __name__ == '__main__':
     train_dataset = valid_dataset = dataset
   
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=dataset.collate_fn
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=partial(dataset.collate_fn, feature_default_value=train_dataset.feature_default_value, down_sample_window=[70, 50])
     )
     valid_loader = DataLoader(
-        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=dataset.collate_fn
+        valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=partial(dataset.collate_fn, feature_default_value=None, down_sample_window=[])
     )
     usernum, itemnum = dataset.usernum, dataset.itemnum
     feat_statistics, feat_types = dataset.feat_statistics, dataset.feature_types
@@ -109,7 +124,7 @@ if __name__ == '__main__':
         if args.inference_only:
             break
         for step, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, time_generate = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
@@ -124,14 +139,17 @@ if __name__ == '__main__':
             loss = bce_criterion(pos_logits[indices], pos_labels[indices])
             loss += bce_criterion(neg_logits[indices], neg_labels[indices])
 
-            log_json = json.dumps(
-                {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
-            )
-            log_file.write(log_json + '\n')
-            log_file.flush()
-            print(log_json)
+            
 
-            writer.add_scalar('Loss/train', loss.item(), global_step)
+            if global_step % 10 == 0:
+                log_json = json.dumps(
+                    {'global_step': global_step, 'loss': loss.item(), 'epoch': epoch, 'time': time.time()}
+                )
+                log_file.write(log_json + '\n')
+                log_file.flush()
+                print(log_json)
+                print(f"Generate batchsize{len(seq)} from {args.batch_size}, time_generate={time_generate:.2f}s")
+                writer.add_scalar('Loss/train', loss.item(), global_step)
 
             global_step += 1
 
@@ -143,7 +161,7 @@ if __name__ == '__main__':
         model.eval()
         valid_loss_sum = 0
         for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat, _ = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
@@ -160,30 +178,30 @@ if __name__ == '__main__':
         valid_loss_sum /= len(valid_loader)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
         
-        # 评估 NDCG@10 和 HR@10
-        val_ndcg10, val_hr10 = evaluate_ndcg10_hr10(model, valid_loader, args.device)
-        writer.add_scalar('NDCG@10/valid', val_ndcg10, epoch)
-        writer.add_scalar('HR@10/valid', val_hr10, epoch)
+        # # 评估 NDCG@10 和 HR@10
+        # val_ndcg10, val_hr10 = evaluate_ndcg10_hr10(model, valid_loader, args.device)
+        # writer.add_scalar('NDCG@10/valid', val_ndcg10, epoch)
+        # writer.add_scalar('HR@10/valid', val_hr10, epoch)
         
-        print(f"Epoch {epoch}: Valid Loss={valid_loss_sum:.4f}, NDCG@10={val_ndcg10:.4f}, HR@10={val_hr10:.4f}")
+        # print(f"Epoch {epoch}: Valid Loss={valid_loss_sum:.4f}, NDCG@10={val_ndcg10:.4f}, HR@10={val_hr10:.4f}")
         
-        # 更新最佳指标
-        if val_ndcg10 > best_val_ndcg:
-            best_val_ndcg = val_ndcg10
-            best_val_hr = val_hr10
+        # # 更新最佳指标
+        # if val_ndcg10 > best_val_ndcg:
+        #     best_val_ndcg = val_ndcg10
+        #     best_val_hr = val_hr10
 
-        save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"epoch{epoch}.valid_loss={valid_loss_sum:.4f}.ndcg10={val_ndcg10:.4f}")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), save_dir / "model.pt")
+        # save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"epoch{epoch}.valid_loss={valid_loss_sum:.4f}.ndcg10={val_ndcg10:.4f}")
+        # save_dir.mkdir(parents=True, exist_ok=True)
+        # torch.save(model.state_dict(), save_dir / "model.pt")
         
-        # 保存最佳模型
-        if val_ndcg10 > best_val_ndcg:
-            best_model_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), "best_model")
-            best_model_dir.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), best_model_dir / "model.pt")
-            print(f"New best model saved! NDCG@10: {val_ndcg10:.4f}, HR@10: {val_hr10:.4f}")
+    #     # 保存最佳模型
+    #     if val_ndcg10 > best_val_ndcg:
+    #         best_model_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), "best_model")
+    #         best_model_dir.mkdir(parents=True, exist_ok=True)
+    #         torch.save(model.state_dict(), best_model_dir / "model.pt")
+    #         print(f"New best model saved! NDCG@10: {val_ndcg10:.4f}, HR@10: {val_hr10:.4f}")
 
-    print("Done")
-    print(f"Training completed! Best validation NDCG@10: {best_val_ndcg:.4f}, HR@10: {best_val_hr:.4f}")
+    # print("Done")
+    # print(f"Training completed! Best validation NDCG@10: {best_val_ndcg:.4f}, HR@10: {best_val_hr:.4f}")
     writer.close()
     log_file.close()
