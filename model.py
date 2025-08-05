@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from dataset import save_emb
+from utils.losses import RecommendationLoss
 
 
 class FlashMultiHeadAttention(torch.nn.Module):
@@ -115,6 +116,9 @@ class BaselineModel(torch.nn.Module):
         self.maxlen = args.maxlen
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
+
+
+
 
         self.item_emb = torch.nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
         self.user_emb = torch.nn.Embedding(self.user_num + 1, args.hidden_units, padding_idx=0)
@@ -360,10 +364,10 @@ class BaselineModel(torch.nn.Module):
         return log_feats
 
     def forward(
-        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature
+        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature, loss_type='bce'
     ):
         """
-        训练时调用，计算正负样本的logits
+        训练时调用，根据loss_type计算不同类型的损失
 
         Args:
             user_item: 用户序列ID
@@ -375,23 +379,21 @@ class BaselineModel(torch.nn.Module):
             seq_feature: 序列特征list，每个元素为当前时刻的特征字典
             pos_feature: 正样本特征list，每个元素为当前时刻的特征字典
             neg_feature: 负样本特征list，每个元素为当前时刻的特征字典
+            loss_type: 损失函数类型，'bce', 'bpr', 'triplet', 'cosine_triplet', 'listwise_contrastive', 'focal'
 
         Returns:
-            pos_logits: 正样本logits，形状为 [batch_size, maxlen]
-            neg_logits: 负样本logits，形状为 [batch_size, maxlen]
+           
+            loss值
         """
+        # 计算序列表示和样本embeddings
         log_feats = self.log2feats(user_item, mask, seq_feature)
         loss_mask = (next_mask == 1).to(self.dev)
-
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
 
-        pos_logits = (log_feats * pos_embs).sum(dim=-1)
-        neg_logits = (log_feats * neg_embs).sum(dim=-1)
-        pos_logits = pos_logits * loss_mask
-        neg_logits = neg_logits * loss_mask
-
-        return pos_logits, neg_logits
+        
+        loss_func = RecommendationLoss(loss_type, self.dev)
+        return loss_func(log_feats, pos_embs, neg_embs, loss_mask)
 
     def predict(self, log_seqs, seq_feature, mask):
         """

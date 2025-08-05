@@ -13,9 +13,15 @@ from dataset import MyTestDataset, save_emb
 from model import BaselineModel
 
 from dotenv import load_dotenv
-
+import random
 load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
-
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # 如果用多卡
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def get_ckpt_path():
     ckpt_path = os.environ.get("MODEL_OUTPUT_PATH")
@@ -36,7 +42,7 @@ def get_args():
 
     # Baseline Model construction
     parser.add_argument('--hidden_units', default=32, type=int)
-    parser.add_argument('--num_blocks', default=2, type=int)
+    parser.add_argument('--num_blocks', default=1, type=int)
     parser.add_argument('--num_epochs', default=3, type=int)
     parser.add_argument('--num_heads', default=4, type=int)
     parser.add_argument('--dropout_rate', default=0.2, type=float)
@@ -45,9 +51,10 @@ def get_args():
     parser.add_argument('--inference_only', action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
     parser.add_argument('--norm_first', action='store_true')
+    parser.add_argument('--dff', default=32, type=int)
 
     # MMemb Feature ID
-    parser.add_argument('--mm_emb_id', nargs='+', default=['82'], type=str, choices=[str(s) for s in range(81, 87)])
+    parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
 
     args = parser.parse_args()
 
@@ -144,6 +151,7 @@ def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, mode
 
 
 def infer():
+    set_seed(42)
     args = get_args()
     data_path = os.environ.get('EVAL_DATA_PATH')
     test_dataset = MyTestDataset(data_path, args)

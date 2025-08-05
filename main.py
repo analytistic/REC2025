@@ -51,7 +51,12 @@ def get_args():
     parser.add_argument('--dff', default=64, type=int)
 
     # MMemb Feature ID
-    parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
+    parser.add_argument('--mm_emb_id', nargs='+', default=[], type=str, choices=[str(s) for s in range(81, 87)])
+    
+    # Loss function type
+    parser.add_argument('--loss_type', default='triplet', type=str, 
+                       choices=['bce', 'bpr', 'triplet', 'cosine_triplet', 'listwise_contrastive', 'focal'],
+                       help='Loss function type to use for training')
 
     args = parser.parse_args()
 
@@ -74,7 +79,7 @@ if __name__ == '__main__':
     train_dataset = valid_dataset = dataset
   
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=partial(dataset.collate_fn, feature_default_value=train_dataset.feature_default_value, down_sample_window=[70, 50])
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=partial(dataset.collate_fn, feature_default_value=train_dataset.feature_default_value, down_sample_window=[])
     )
     valid_loader = DataLoader(
         valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=partial(dataset.collate_fn, feature_default_value=None, down_sample_window=[])
@@ -119,6 +124,7 @@ if __name__ == '__main__':
     t0 = time.time()
     global_step = 0
     print("Start training")
+    print(f"Using loss function: {args.loss_type}")
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
         model.train()
         if args.inference_only:
@@ -128,18 +134,18 @@ if __name__ == '__main__':
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
-            )
-            pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
-                neg_logits.shape, device=args.device
-            )
-            optimizer.zero_grad()
-            indices = np.where(next_token_type == 1)
-            loss = bce_criterion(pos_logits[indices], pos_labels[indices])
-            loss += bce_criterion(neg_logits[indices], neg_labels[indices])
-
             
+            optimizer.zero_grad()
+            
+
+            loss = model(
+                seq, pos, neg, token_type, next_token_type, next_action_type, 
+                seq_feat, pos_feat, neg_feat, loss_type=args.loss_type
+            )
+
+            # 添加L2正则化
+            for param in model.item_emb.parameters():
+                loss += args.l2_emb * torch.norm(param)
 
             if global_step % 10 == 0:
                 log_json = json.dumps(
@@ -153,8 +159,6 @@ if __name__ == '__main__':
 
             global_step += 1
 
-            for param in model.item_emb.parameters():
-                loss += args.l2_emb * torch.norm(param)
             loss.backward()
             optimizer.step()
 
@@ -165,15 +169,13 @@ if __name__ == '__main__':
             seq = seq.to(args.device)
             pos = pos.to(args.device)
             neg = neg.to(args.device)
-            pos_logits, neg_logits = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
-            )
-            pos_labels, neg_labels = torch.ones(pos_logits.shape, device=args.device), torch.zeros(
-                neg_logits.shape, device=args.device
-            )
-            indices = np.where(next_token_type == 1)
-            loss = bce_criterion(pos_logits[indices], pos_labels[indices])
-            loss += bce_criterion(neg_logits[indices], neg_labels[indices])
+            
+            # 使用指定的损失函数进行验证
+            with torch.no_grad():
+                loss = model(
+                    seq, pos, neg, token_type, next_token_type, next_action_type, 
+                    seq_feat, pos_feat, neg_feat, loss_type=args.loss_type
+                )
             valid_loss_sum += loss.item()
         valid_loss_sum /= len(valid_loader)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
