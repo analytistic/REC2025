@@ -1,0 +1,6 @@
+neg_num = 5
+
+[sample]
+random = 1.0
+in_batch = 0.0
+popularity_based = 0.0

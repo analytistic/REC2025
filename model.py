@@ -73,12 +73,12 @@ class PointWiseFeedForward(torch.nn.Module):
 
         self.conv1 = torch.nn.Conv1d(hidden_units, dff, kernel_size=1)
         self.dropout1 = torch.nn.Dropout(p=dropout_rate)
-        self.relu = torch.nn.ReLU()
+        self.act = torch.nn.GELU()
         self.conv2 = torch.nn.Conv1d(dff, hidden_units, kernel_size=1)
         self.dropout2 = torch.nn.Dropout(p=dropout_rate)
 
     def forward(self, inputs):
-        outputs = self.dropout2(self.conv2(self.relu(self.dropout1(self.conv1(inputs.transpose(-1, -2))))))
+        outputs = self.dropout2(self.conv2(self.act(self.dropout1(self.conv1(inputs.transpose(-1, -2))))))
         outputs = outputs.transpose(-1, -2)  # as Conv1D requires (N, C, Length)
         return outputs
 
@@ -172,7 +172,10 @@ class BaselineModel(torch.nn.Module):
         for k in self.USER_ARRAY_FEAT:
             self.sparse_emb[k] = torch.nn.Embedding(self.USER_ARRAY_FEAT[k] + 1, args.hidden_units, padding_idx=0)
         for k in self.ITEM_EMB_FEAT:
-            self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units, bias=False)
+            self.emb_transform[k] = torch.nn.Sequential(
+                torch.nn.ReLU(),
+                torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units, bias=False)
+            )
 
     def _init_feat_info(self, feat_statistics, feat_types):
         """
@@ -222,13 +225,25 @@ class BaselineModel(torch.nn.Module):
             return torch.from_numpy(batch_data).to(self.dev)
         else:
             # 如果特征是Sparse类型，直接转换为tensor
-            max_seq_len = max(len(seq_feature[i]) for i in range(batch_size))
-            batch_data = np.zeros((batch_size, max_seq_len), dtype=np.int64)
-
-            for i in range(batch_size):
-                seq_data = [item[k] for item in seq_feature[i]]
-                batch_data[i] = seq_data
-
+            
+            if self.training:
+                max_seq_len = self.maxlen + 1
+            elif isinstance(seq_feature[0][0], dict):
+                max_seq_len = max(len(seq_feature[i]) for i in range(batch_size))
+            else:
+                max_seq_len = max(len(subitem) for item in seq_feature for subitem in item)
+            
+            if isinstance(seq_feature[0][0], dict):
+                batch_data = np.zeros((batch_size, max_seq_len), dtype=np.int64)
+                for i in range(batch_size):
+                    seq_data = [item[k] for item in seq_feature[i]]
+                    batch_data[i] = seq_data
+            else:
+                batch_data = np.zeros((batch_size, len(seq_feature[0]), max_seq_len), dtype=np.int64)
+                for i in range(batch_size):
+                    for j in range(len(seq_feature[i])):
+                        seq_data = [item[k] for item in seq_feature[i][j]]
+                        batch_data[i, j, :max_seq_len] = seq_data[:max_seq_len]
             return torch.from_numpy(batch_data).to(self.dev)
 
     def feat2emb(self, seq, feature_array, mask=None, include_user=False):
@@ -242,6 +257,10 @@ class BaselineModel(torch.nn.Module):
         Returns:
             seqs_emb: 序列特征的Embedding
         """
+        neg_flag = False
+        if len(seq.shape) == 3:
+            seq = seq.view(-1, seq.shape[2])
+            neg_flag = True
         seq = seq.to(self.dev)
         # pre-compute embedding
         if include_user:
@@ -278,6 +297,11 @@ class BaselineModel(torch.nn.Module):
 
             for k in feat_dict:
                 tensor_feature = self.feat2tensor(feature_array, k)
+                if len(tensor_feature.shape) == 3 and not feat_type.endswith('array'):
+                    tensor_feature = tensor_feature.view(-1, tensor_feature.shape[2])
+                elif len(tensor_feature.shape) == 4:
+                    tensor_feature = tensor_feature.view(-1, tensor_feature.shape[2], tensor_feature.shape[3])
+                 
 
                 if feat_type.endswith('sparse'):
                     feat_list.append(self.sparse_emb[k](tensor_feature))
@@ -288,17 +312,33 @@ class BaselineModel(torch.nn.Module):
 
         for k in self.ITEM_EMB_FEAT:
             # collect all data to numpy, then batch-convert
-            batch_size = len(feature_array)
             emb_dim = self.ITEM_EMB_FEAT[k]
-            seq_len = len(feature_array[0])
+            if neg_flag:
+                batch_size = len(feature_array)
+                seq_len = len(feature_array[0][0])
+                neg_size = len(feature_array[0])
+                batch_emb_data = np.zeros((batch_size, neg_size, seq_len, emb_dim), dtype=np.float32)
+            else:
+                batch_size = len(feature_array)
+                seq_len = len(feature_array[0])
+                batch_emb_data = np.zeros((batch_size, seq_len, emb_dim), dtype=np.float32)
+            
 
             # pre-allocate tensor
-            batch_emb_data = np.zeros((batch_size, seq_len, emb_dim), dtype=np.float32)
-
-            for i, seq in enumerate(feature_array):
-                for j, item in enumerate(seq):
-                    if k in item:
-                        batch_emb_data[i, j] = item[k]
+            
+            if neg_flag:
+                for i, negs in enumerate(feature_array):
+                    for j, neg in enumerate(negs):
+                        for l, item in enumerate(neg):
+                            if k in item:
+                                batch_emb_data[i, j, l, :] = item[k]
+                batch_emb_data = batch_emb_data.reshape(-1, seq_len, emb_dim)
+            
+            else:
+                for i, seq in enumerate(feature_array):
+                    for j, item in enumerate(seq):
+                        if k in item:
+                            batch_emb_data[i, j] = item[k]
 
             # batch-convert and transfer to GPU
             tensor_feature = torch.from_numpy(batch_emb_data).to(self.dev)
@@ -389,6 +429,7 @@ class BaselineModel(torch.nn.Module):
         log_feats = self.log2feats(user_item, mask, seq_feature)
         loss_mask = (next_mask == 1).to(self.dev)
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
+        
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
 
         

@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import toml
-
+from torch.utils.tensorboard import SummaryWriter
+import os
 
 
 class RecommendationLoss:
@@ -23,8 +24,9 @@ class RecommendationLoss:
         self.device = device
         self.cfg = toml.load('./utils/loss_config.toml')
 
-        # BCE损失函数
-        self.bce_criterion = nn.BCEWithLogitsLoss(reduction='mean')
+
+
+        
         
     def __call__(self, log_feats, pos_embs, neg_embs, loss_mask):
         """
@@ -51,6 +53,8 @@ class RecommendationLoss:
             return self._listwise_contrastive_loss(log_feats, pos_embs, neg_embs, loss_mask)
         elif self.loss_type == 'focal':
             return self._focal_loss(log_feats, pos_embs, neg_embs, loss_mask)
+        elif self.loss_type == 'infonce':
+            return self._infonce_loss(log_feats, pos_embs, neg_embs, loss_mask)
         else:
             raise ValueError(f"Unsupported loss type: {self.loss_type}")
     
@@ -60,21 +64,27 @@ class RecommendationLoss:
         
         计算正样本和负样本的BCE损失
         """
-        # 计算正样本和负样本的logits
-        pos_logits = (log_feats * pos_embs).sum(dim=-1)  # [batch_size, seq_len]
-        neg_logits = (log_feats * neg_embs).sum(dim=-1)  # [batch_size, seq_len]
-        
-        # 创建标签
+
+        if neg_embs.shape[0] != log_feats.shape[0]:
+            neg_embs = neg_embs.reshape(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
+        else:
+            neg_embs = neg_embs.unsqueeze(1)
+        pos_logits = (log_feats * pos_embs).sum(dim=-1) 
+        neg_logits = (log_feats.unsqueeze(1) * neg_embs).sum(dim=-1) 
+
         pos_labels = torch.ones_like(pos_logits)
         neg_labels = torch.zeros_like(neg_logits)
         indices = np.where(loss_mask == 1)
+        indices_neg = np.where(loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1) == 1)
+
+        alpha = self.cfg['bce']['alpha']
+        beta = self.cfg['bce']['beta']
+        criterion = nn.BCEWithLogitsLoss(reduction=self.cfg['bce']['reduction'])
+        pos_loss = criterion(pos_logits[indices], pos_labels[indices])
+        neg_loss = criterion(neg_logits[indices_neg], neg_labels[indices_neg])
 
         
-        # 计算BCE损失
-        pos_loss = self.bce_criterion(pos_logits[indices], pos_labels[indices])
-        neg_loss = self.bce_criterion(neg_logits[indices], neg_labels[indices])
-
-        return pos_loss + neg_loss
+        return alpha * pos_loss + beta * neg_loss
     
     def _bpr_loss(self, log_feats, pos_embs, neg_embs, loss_mask):
         """
@@ -82,16 +92,21 @@ class RecommendationLoss:
         
         BPR损失：max(0, -log(σ(pos_score - neg_score)))
         """
-        # 计算正样本和负样本的得分
-        pos_scores = (log_feats * pos_embs).sum(dim=-1)  # [batch_size, seq_len]
-        neg_scores = (log_feats * neg_embs).sum(dim=-1)  # [batch_size, seq_len]
+        if neg_embs.shape[0] != log_feats.shape[0]:
+            neg_embs = neg_embs.reshape(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
+        else:
+            neg_embs = neg_embs.unsqueeze(1)
+
+        pos_scores = (log_feats * pos_embs).sum(dim=-1).unsqueeze(1).expand(-1, neg_embs.shape[1], -1) 
+        neg_scores = (log_feats.unsqueeze(1) * neg_embs).sum(dim=-1)  
         
-        # 计算得分差
-        score_diff = pos_scores - neg_scores  # [batch_size, seq_len]
+
+        score_diff = pos_scores - neg_scores 
         
+        loss_mask = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)
         indices = np.where(loss_mask == 1)
         
-        # BPR损失：-log(sigmoid(pos_score - neg_score))
+
         loss = -torch.log(torch.sigmoid(score_diff[indices]) + 1e-8).mean()
 
         return loss
@@ -102,13 +117,19 @@ class RecommendationLoss:
         
         三元组损失：max(0, margin + neg_distance - pos_distance)
         """
-        # 计算L2距离
-        pos_distances = torch.norm(log_feats - pos_embs, p=2, dim=-1)  # [batch_size, seq_len]
-        neg_distances = torch.norm(log_feats - neg_embs, p=2, dim=-1)  # [batch_size, seq_len]
+
+        if neg_embs.shape[0] != log_feats.shape[0]:
+            neg_embs = neg_embs.reshape(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
+        else:
+            neg_embs = neg_embs.unsqueeze(1)
         
+
+
+        pos_distances = torch.norm(log_feats - pos_embs, p=2, dim=-1).unsqueeze(1).expand(-1, neg_embs.shape[1], -1) 
+        neg_distances = torch.norm(log_feats.unsqueeze(1) - neg_embs, p=2, dim=-1)  
+        loss_mask = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)
         indices = np.where(loss_mask == 1)
-        
-        # 三元组损失
+
         margin = self.cfg.get('margin', 1.0)
         loss = F.relu(margin + pos_distances[indices] - neg_distances[indices]).mean()
 
@@ -120,18 +141,22 @@ class RecommendationLoss:
         
         基于余弦相似度的三元组损失：max(0, margin + neg_similarity - pos_similarity)
         """
-        # 归一化向量
+
         log_feats_norm = F.normalize(log_feats, p=2, dim=-1)
         pos_embs_norm = F.normalize(pos_embs, p=2, dim=-1)
         neg_embs_norm = F.normalize(neg_embs, p=2, dim=-1)
+        if neg_embs.shape[0] != log_feats.shape[0]:
+            neg_embs = neg_embs.reshape(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
+        else:
+            neg_embs = neg_embs.unsqueeze(1)
         
-        # 计算余弦相似度
-        pos_similarities = (log_feats_norm * pos_embs_norm).sum(dim=-1)  # [batch_size, seq_len]
-        neg_similarities = (log_feats_norm * neg_embs_norm).sum(dim=-1)  # [batch_size, seq_len]
+
+        pos_similarities = (log_feats_norm * pos_embs_norm).sum(dim=-1).unsqueeze(1).expand(-1, neg_embs.shape[1], -1) 
+        neg_similarities = (log_feats_norm.unsqueeze(1) * neg_embs_norm).sum(dim=-1)  
         
         indices = np.where(loss_mask == 1)
         
-        # 余弦三元组损失：max(0, margin - pos_similarity + neg_similarity)
+
         margin = self.cfg.get('margin', 1.0)
         loss = F.relu(margin + neg_similarities[indices] - pos_similarities[indices]).mean()
         
@@ -206,56 +231,58 @@ class RecommendationLoss:
         total_loss = (pos_loss.mean() + neg_loss.mean()) / 2
         
         return total_loss
-
-
-class ContrastiveLoss(nn.Module):
-    """
-    对比损失函数（可选的额外实现）
-    """
     
-    def __init__(self, temperature=0.1):
-        super(ContrastiveLoss, self).__init__()
-        self.temperature = temperature
+    def _infonce_loss(self, log_feats, pos_embs, neg_embs, loss_mask):
+        """
+        InfoNCE Loss
+        L_InfoNCE = -[1/(B·L_valid)] × Σ（b=1-B）Σ（l=1-L）[ mask(b,l) × log( exp(sim(q(b,l), p(b,l))/τ) / ( exp(sim(q(b,l), p(b,l))/τ) + Σ（n=1-N）exp(sim(q(b,l), n(b,l,n))/τ) ) ) ]
+        """
+
+        if neg_embs.shape[0] != log_feats.shape[0]:
+            neg_embs = neg_embs.reshape(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
+        else:
+            neg_embs = neg_embs.unsqueeze(1)
+        
+
+        temperature = self.cfg.get('infonce', {}).get('temperature', 0.1)
+        
+
+        query = F.normalize(log_feats, p=2, dim=-1)  
+        positive = F.normalize(pos_embs, p=2, dim=-1)  
+        negatives = F.normalize(neg_embs, p=2, dim=-1)  # [batch_size, neg_num, seq_len, hidden_dim] 
+        
+  
+        pos_scores = (query * positive).sum(dim=-1) / temperature  
+        
+   
+        neg_scores = (query.unsqueeze(1) * negatives).sum(dim=-1) / temperature  
+        
+
+        loss_mask_expanded = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)  # [batch_size, neg_num, seq_len]
+
+        pos_scores_masked = pos_scores[loss_mask == 1]  
+        neg_scores_masked = neg_scores[loss_mask_expanded == 1]  
+        
+        if pos_scores_masked.size(0) == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+        
+
+        neg_num = neg_embs.shape[1]
+        neg_scores_reshaped = neg_scores_masked.view(pos_scores_masked.size(0), neg_num)  # [N, neg_num]
+        
+       
+        all_scores = torch.cat([pos_scores_masked.unsqueeze(1), neg_scores_reshaped], dim=1)  # [N, 1 + neg_num]
+        
     
-    def forward(self, features, labels):
-        """
-        计算对比损失
+        targets = torch.zeros(all_scores.size(0), dtype=torch.long, device=self.device)
         
-        Args:
-            features: 特征表示 [batch_size, feature_dim]
-            labels: 标签 [batch_size]
-        """
-        device = features.device
-        batch_size = features.shape[0]
-        
-        # 归一化特征
-        features = F.normalize(features, dim=1)
-        
-        # 计算相似度矩阵
-        similarity_matrix = torch.matmul(features, features.T) / self.temperature
-        
-        # 创建掩码
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device)
-        
-        # 移除对角线
-        mask = mask.fill_diagonal_(0)
-        
-        # 计算正样本和负样本的logits
-        logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
-        logits = similarity_matrix - logits_max.detach()
-        
-        # 计算exp值
-        exp_logits = torch.exp(logits)
-        
-        # 计算正样本的概率
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
-        
-        # 计算损失
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
-        loss = -mean_log_prob_pos.mean()
+   
+        loss = F.cross_entropy(all_scores, targets)
         
         return loss
+
+
+
 
 
 class InfoNCELoss(nn.Module):

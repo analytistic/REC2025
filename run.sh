@@ -13,4 +13,4 @@ echo ${TRAIN_LOG_PATH}
 cd ${RUNTIME_SCRIPT_DIR}
 
 # write your code below
-python -u main.py --device cpu --mm_emb_id 81 --batch_size 32
+python -u main.py --device cpu --mm_emb_id 81 --batch_size 32 --loss_type infonce

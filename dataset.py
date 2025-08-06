@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from time import time
-
+import toml
+from utils.neg_sample import random_negative_sampling
 
 class MyDataset(torch.utils.data.Dataset):
     """
@@ -38,6 +39,7 @@ class MyDataset(torch.utils.data.Dataset):
         初始化数据集
         """
         super().__init__()
+        self.negsample_cfg = toml.load('utils/negsample_config.toml')
         self.data_dir = Path(data_dir)
         self._load_data_and_offsets()
         self.maxlen = args.maxlen
@@ -125,14 +127,14 @@ class MyDataset(torch.utils.data.Dataset):
 
         seq = np.zeros([self.maxlen + 1], dtype=np.int32)
         pos = np.zeros([self.maxlen + 1], dtype=np.int32)
-        neg = np.zeros([self.maxlen + 1], dtype=np.int32)
+        neg = np.zeros([self.negsample_cfg['neg_num'], self.maxlen + 1], dtype=np.int32)
         token_type = np.zeros([self.maxlen + 1], dtype=np.int32)
         next_token_type = np.zeros([self.maxlen + 1], dtype=np.int32)
         next_action_type = np.zeros([self.maxlen + 1], dtype=np.int32)
 
         seq_feat = np.empty([self.maxlen + 1], dtype=object)
         pos_feat = np.empty([self.maxlen + 1], dtype=object)
-        neg_feat = np.empty([self.maxlen + 1], dtype=object)
+        neg_feat = np.empty([self.negsample_cfg['neg_num'], self.maxlen + 1], dtype=object)
 
         nxt = ext_user_sequence[-1]
         idx = self.maxlen
@@ -157,9 +159,9 @@ class MyDataset(torch.utils.data.Dataset):
             if next_type == 1 and next_i != 0:
                 pos[idx] = next_i
                 pos_feat[idx] = next_feat
-                neg_id = self._random_neq(1, self.itemnum + 1, ts)
-                neg[idx] = neg_id
-                neg_feat[idx] = self.fill_missing_feat(self.item_feat_dict[str(neg_id)], neg_id)
+                neg_id = random_negative_sampling(self.negsample_cfg, 1, self.itemnum+1, {str(x) for x in ts}, set(self.item_feat_dict.keys()))
+                neg[:, idx] = neg_id
+                neg_feat[:, idx] = [self.fill_missing_feat(self.item_feat_dict[str(x)], int(x)) for x in neg_id]
             nxt = record_tuple
             idx -= 1
             if idx == -1:

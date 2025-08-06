@@ -1,1 +1,27 @@
+[bce]
+alpha = 1.0
+beta = 1.0
+reduction = "mean"
+
+[bpr]
+margin = 1.0
+
+[triplet]
+margin = 1.0
+
+[triplet_loss]
 margin = 1
+reduction = 'mean'
+
+[cosine_triplet]
+margin = 1.0
+
+[listwise_contrastive]
+temperature = 0.1
+
+[focal]
+alpha = 0.25
+gamma = 2.0
+
+[infonce]
+temperature = 0.1
