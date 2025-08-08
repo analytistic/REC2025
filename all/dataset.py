@@ -2,7 +2,7 @@ import json
 import pickle
 import struct
 from pathlib import Path
-
+import os
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -39,7 +39,8 @@ class MyDataset(torch.utils.data.Dataset):
         初始化数据集
         """
         super().__init__()
-        self.negsample_cfg = toml.load('utils/negsample_config.toml')
+        config_path = os.path.join(os.path.dirname(__file__), 'utils', 'negsample_config.toml')
+        self.negsample_cfg = toml.load(config_path)
         self.data_dir = Path(data_dir)
         self._load_data_and_offsets()
         self.maxlen = args.maxlen

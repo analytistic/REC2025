@@ -10,8 +10,8 @@ neg_seq = 0
 pos_seq = 0
 neg_batch = 0
 pos_batch = 0
-mix_ratio = 0
-shuffle_all_num = 100
+mix_ratio = 1
+shuffle_all_num = 500
 
 
 

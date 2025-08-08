@@ -1,16 +1,29 @@
-#!/bin/bash
+# #!/bin/bash
+# pip install toml
 
-# 加载环境变量
-source base.env
+# # show ${RUNTIME_SCRIPT_DIR}
+# echo ${RUNTIME_SCRIPT_DIR}
+# # enter train workspace
+# cd ${RUNTIME_SCRIPT_DIR}
 
-# show ${RUNTIME_SCRIPT_DIR}
-echo ${RUNTIME_SCRIPT_DIR}
 
-# show ${TRAIN_LOG_PATH}
-echo ${TRAIN_LOG_PATH}
 
-# enter train workspace
-cd ${RUNTIME_SCRIPT_DIR}
+# # 检查并解压 all.zip
+# if [ -f "all.zip" ]; then
+#     echo "Found all.zip, extracting to current directory..."
+#     unzip -o all.zip
+#     if [ $? -eq 0 ]; then
+#         echo "✓ Successfully extracted all.zip"
+#         rm all.zip  # 删除压缩包节省空间
+#     else
+#         echo "✗ Failed to extract all.zip"
+#         exit 1
+#     fi
+# else
+#     echo "No all.zip found, assuming files are already in place"
+# fi
 
-# write your code below
-python -u main.py --device cpu --mm_emb_id 81 --batch_size 32 --loss_type infonce
+
+python -u main.py --device cpu --loss_type infonce
+
+

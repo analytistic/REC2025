@@ -21,12 +21,12 @@ from utils.train_utils import (
     log_gradient_stats,
     clip_gradients
 )
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import random
 
 from functools import partial
 
-load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
+# load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
 
 def set_seed(seed):
     random.seed(seed)

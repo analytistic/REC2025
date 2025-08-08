@@ -1,6 +1,27 @@
 import argparse
-import json
+import zipfile
 import os
+os.system(f"unzip -n {os.path.dirname(__file__)}/all.zip -d {os.path.dirname(__file__)}")
+print("Files after unzip (recursive):")
+for root, dirs, files in os.walk(os.path.dirname(__file__)):
+    for name in files:
+        print(os.path.relpath(os.path.join(root, name), os.path.dirname(__file__)))
+os.system(f"pip install toml")
+# # 自动解压all.zip到当前目录（如果存在）
+# if os.path.exists('all.zip'):
+#     print('Found all.zip, extracting to current directory...')
+#     with zipfile.ZipFile('all.zip', 'r') as zip_ref:
+#         zip_ref.extractall('.')
+#     print('✓ Successfully extracted all.zip')
+#     os.remove('all.zip')
+# else:
+#     print('No all.zip found, assuming files are already in place')
+
+
+
+
+import json
+
 import struct
 from pathlib import Path
 
@@ -12,9 +33,15 @@ from tqdm import tqdm
 from dataset import MyTestDataset, save_emb
 from model import BaselineModel
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import random
-load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
+# load_dotenv(dotenv_path="/Users/alex/project/Rec/rec_2025/base.env")
+
+
+
+
+GLOBAL_COLD_FEAT = 0
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -35,6 +62,10 @@ def get_ckpt_path():
 def get_args():
     parser = argparse.ArgumentParser()
 
+    # Config file parameter
+    parser.add_argument('--config', default='./utils/train_config.toml', type=str, help='Training configuration file path')
+    
+
     # Train params
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--lr', default=0.001, type=float)
@@ -54,9 +85,31 @@ def get_args():
     parser.add_argument('--dff', default=32, type=int)
 
     # MMemb Feature ID
-    parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
+    parser.add_argument('--mm_emb_id', nargs='+', default=[''], type=str, choices=[str(s) for s in range(81, 87)])
+
+    # infer
+    parser.add_argument('--distance', default='cosine', type=str, help='Distance metric for retrieval')
 
     args = parser.parse_args()
+    
+    # Load configuration from TOML file if it exists
+    if args.config and os.path.exists(args.config):
+        try:
+            import toml
+            config = toml.load(args.config)
+            
+            # Update args with config values (only if not explicitly set via command line)
+            if hasattr(args, 'batch_size') and args.batch_size == 128:  # default value
+                args.batch_size = config.get('training', {}).get('batch_size', args.batch_size)
+            if hasattr(args, 'lr') and args.lr == 0.001:  # default value
+                args.lr = config.get('optimizer', {}).get('lr', args.lr)
+            if hasattr(args, 'num_epochs') and args.num_epochs == 3:  # default value
+                args.num_epochs = config.get('training', {}).get('num_epochs', args.num_epochs)
+                
+        except ImportError:
+            print("Warning: toml package not found, using default values")
+        except Exception as e:
+            print(f"Warning: Failed to load config file {args.config}: {e}")
 
     return args
 
@@ -82,6 +135,9 @@ def process_cold_start_feat(feat):
     """
     处理冷启动特征。训练集未出现过的特征value为字符串，默认转换为0.可设计替换为更好的方法。
     """
+    global GLOBAL_COLD_FEAT
+    GLOBAL_COLD_FEAT += 1
+    print(f"Processing cold start feature, total cold features: {GLOBAL_COLD_FEAT}")
     processed_feat = {}
     for feat_id, feat_value in feat.items():
         if type(feat_value) == list:
@@ -99,7 +155,7 @@ def process_cold_start_feat(feat):
     return processed_feat
 
 
-def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, model):
+def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, model, args):
     """
     生产候选库item的id和embedding
 
@@ -144,7 +200,7 @@ def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, mode
             retrieve_id2creative_id[retrieval_id] = creative_id
 
     # 保存候选库的embedding和sid
-    model.save_item_emb(item_ids, retrieval_ids, features, os.environ.get('EVAL_RESULT_PATH'))
+    model.save_item_emb(item_ids, retrieval_ids, features, os.environ.get('EVAL_RESULT_PATH'), distance = args.distance)
     with open(Path(os.environ.get('EVAL_RESULT_PATH'), "retrive_id2creative_id.json"), "w") as f:
         json.dump(retrieve_id2creative_id, f)
     return retrieve_id2creative_id
@@ -171,7 +227,7 @@ def infer():
 
         seq, token_type, seq_feat, user_id = batch
         seq = seq.to(args.device)
-        logits = model.predict(seq, seq_feat, token_type)
+        logits = model.predict(seq, seq_feat, token_type, distance = args.distance)
         for i in range(logits.shape[0]):
             emb = logits[i].unsqueeze(0).detach().cpu().numpy().astype(np.float32)
             all_embs.append(emb)
@@ -184,6 +240,7 @@ def infer():
         test_dataset.feature_default_value,
         test_dataset.mm_emb_dict,
         model,
+        args,
     )
     all_embs = np.concatenate(all_embs, axis=0)
     # 保存query文件
