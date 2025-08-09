@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from dataset import save_emb
-from utils.losses import RecommendationLoss
+from utils.losses import RecommendationLoss, SoftWeightLoss
 from layers.resmlp import RESMLP
 
 from utils.neg_sample import train_batch_shuffling_all
@@ -114,12 +114,14 @@ class BaselineModel(torch.nn.Module):
         super(BaselineModel, self).__init__()
         config_path = os.path.join(os.path.dirname(__file__), 'utils', 'negsample_config.toml')
         self.negsample_cfg = toml.load(config_path) 
+        self.softweight_loss = SoftWeightLoss(2)
 
         self.user_num = user_num
         self.item_num = item_num
         self.dev = args.device
         self.norm_first = args.norm_first
         self.maxlen = args.maxlen
+        self.loss_func = RecommendationLoss(args.loss_type, self.dev)
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
 
@@ -383,10 +385,10 @@ class BaselineModel(torch.nn.Module):
         poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
 
         poss *= log_seqs != 0
-        poss_bias = torch.argmax((mask.to(self.dev) == 1).int(), dim=1).expand(maxlen, -1).T.clone()
-        poss_bias += -1
-        poss_bias *= log_seqs != 0
-        poss -= poss_bias
+        # poss_bias = torch.argmax((mask.to(self.dev) == 1).int(), dim=1).expand(maxlen, -1).T.clone()
+        # poss_bias += -1
+        # poss_bias *= log_seqs != 0
+        # poss -= poss_bias
         
         
         
@@ -443,17 +445,22 @@ class BaselineModel(torch.nn.Module):
         
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
         neg_embs = neg_embs.view(log_feats.shape[0], -1, log_feats.shape[1], log_feats.shape[2])
-        neg_embs_sample = torch.cat((neg_embs, train_batch_shuffling_all(pos_embs, neg_embs, mix_ratio=self.negsample_cfg['in_train']['mix_ratio'], sample_num=self.negsample_cfg['in_train']['shuffle_all_num'])), dim=1)
-        loss_func = RecommendationLoss(loss_type, self.dev)
-        print(neg_embs_sample.shape, neg_embs.shape)
+        
+
+      
 
         if self.training:
-            return loss_func(log_feats, pos_embs, neg_embs_sample, loss_mask) 
+            # return self.softweight_loss((loss_func(log_feats, pos_embs, neg_embs_sample, loss_mask), loss_func2(log_feats, pos_embs, neg_embs, loss_mask)))
+            neg_embs_sample = torch.cat((neg_embs, train_batch_shuffling_all(pos_embs, neg_embs, mix_ratio=self.negsample_cfg['in_train']['mix_ratio'], sample_num=self.negsample_cfg['in_train']['shuffle_all_num'], mask=loss_mask)), dim=1)
+            loss, pos_score, neg_score, neg_var = self.loss_func(log_feats, pos_embs, neg_embs_sample, loss_mask)
+            return loss, pos_score, neg_score, neg_var
         else:
             loss_bce = RecommendationLoss('bce', self.dev)
-            return loss_func(log_feats, pos_embs, neg_embs_sample, loss_mask), loss_bce(log_feats, pos_embs, neg_embs, loss_mask), log_feats, pos_embs, neg_embs_sample, loss_mask  
+            neg_embs_sample = torch.cat((neg_embs, train_batch_shuffling_all(pos_embs, neg_embs, mix_ratio=self.negsample_cfg['in_eval']['mix_ratio'], sample_num=self.negsample_cfg['in_eval']['shuffle_all_num'], mask=loss_mask)), dim=1)
+            loss, pos_score, neg_score, neg_var = self.loss_func(log_feats, pos_embs, neg_embs_sample, loss_mask)
+            return loss, loss_bce(log_feats, pos_embs, neg_embs, loss_mask), log_feats, pos_embs, neg_embs_sample, loss_mask
 
-    def predict(self, log_seqs, seq_feature, mask, distance='dot'):
+    def predict(self, log_seqs, seq_feature, mask, distance='cosine'):
         """
         计算用户序列的表征
         Args:
@@ -466,12 +473,15 @@ class BaselineModel(torch.nn.Module):
         log_feats = self.log2feats(log_seqs, mask, seq_feature)
 
         final_feat = log_feats[:, -1, :]
+        print('FINAL FEAT SHAPE', final_feat.shape)
         if distance == 'cosine':
             final_feat = F.normalize(final_feat, p=2, dim=-1)
+        print(f"检查是否归一化: {torch.norm(final_feat, p=2, dim=-1).mean().item()}")
+
 
         return final_feat
 
-    def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024, norm=None, distance = 'dot'):
+    def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024, distance = 'cosine'):
         """
         生成候选库item embedding，用于检索
 
@@ -495,17 +505,16 @@ class BaselineModel(torch.nn.Module):
             batch_feat = np.array(batch_feat, dtype=object)
 
             batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
-            if norm:
-                batch_emb = F.normalize(batch_emb, p=norm, dim=-1)
+            if distance == 'cosine':
+                batch_emb = F.normalize(batch_emb, p=2, dim=-1)
 
             all_embs.append(batch_emb.detach().cpu().numpy().astype(np.float32))
-
+        # 检查最后一个是否归一化
+        print(f"检查最后一个是否归一化: {np.linalg.norm(all_embs[-1], axis=1).mean()}")
         # 合并所有批次的结果并保存
         final_ids = np.array(retrieval_ids, dtype=np.uint64).reshape(-1, 1)
         final_embs = np.concatenate(all_embs, axis=0)
-        # 对最后一维做L2归一化，保证faiss余弦检索正确
-        if distance == 'cosine':
-            final_embs = final_embs / (np.linalg.norm(final_embs, axis=-1, keepdims=True) + 1e-12)
+
 
         save_emb(final_embs, Path(save_path, 'embedding.fbin'))
         save_emb(final_ids, Path(save_path, 'id.u64bin'))

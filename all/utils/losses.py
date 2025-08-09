@@ -22,7 +22,10 @@ class RecommendationLoss:
         """
         self.loss_type = loss_type
         self.device = device
-        self.cfg = toml.load('./utils/loss_config.toml')
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'utils', 'loss_config.toml')
+        self.cfg = toml.load(config_path)
+        self.glob_step = 0
+        
 
 
 
@@ -81,7 +84,7 @@ class RecommendationLoss:
         neg_loss = criterion(neg_logits[indices_neg], neg_labels[indices_neg])
 
         
-        return alpha * pos_loss + beta * neg_loss
+        return alpha * pos_loss + beta * neg_loss, torch.mean(pos_logits[indices]).item(), torch.mean(neg_logits[indices_neg]).item(), torch.var(neg_logits[indices_neg]).item()
     
     def _bpr_loss(self, log_feats, pos_embs, neg_embs, loss_mask):
         """
@@ -103,7 +106,7 @@ class RecommendationLoss:
 
         loss = -torch.log(torch.sigmoid(score_diff[indices]) + 1e-8).mean()
 
-        return loss
+        return loss, torch.mean(pos_scores[indices]).item(), torch.mean(neg_scores[indices]).item(), torch.var(neg_scores[indices]).item()
     
     def _triplet_loss(self, log_feats, pos_embs, neg_embs, loss_mask):
         """
@@ -121,7 +124,7 @@ class RecommendationLoss:
         loss_mask_expanded = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)
         indices = (loss_mask_expanded == 1)
 
-        margin = self.cfg.get('margin', 1.0)
+        margin = self.cfg.get('triplet', {}).get('margin', 1.0)
         loss = F.relu(margin + pos_distances[indices] - neg_distances[indices]).mean()
 
         return loss
@@ -146,10 +149,10 @@ class RecommendationLoss:
         indices = (loss_mask_expanded == 1)
         
 
-        margin = self.cfg.get('margin', 1.0)
+        margin = self.cfg.get('cosine_triplet', {}).get('margin', 1.0)
         loss = F.relu(margin + neg_similarities[indices] - pos_similarities[indices]).mean()
         
-        return loss
+        return loss, torch.mean(pos_similarities[indices]).item(), torch.mean(neg_similarities[indices]).item(), torch.var(neg_similarities[indices]).item()
     
     def _listwise_contrastive_loss(self, log_feats, pos_embs, neg_embs, loss_mask, temperature=0.1):
         """
@@ -231,12 +234,19 @@ class RecommendationLoss:
         
 
         temperature = self.cfg.get('infonce', {}).get('temperature', 0.1)
-        
+        # multi = self.glob_step // 3000 + 1
+        # temperature = min(multi * temperature, 0.4)  
+        # print(f"Current temperature: {temperature}")
+        # self.glob_step += 1
 
-        query = F.normalize(log_feats, p=2, dim=-1)  
-        positive = F.normalize(pos_embs, p=2, dim=-1)  
-        negatives = F.normalize(neg_embs, p=2, dim=-1)  # [batch_size, neg_num, seq_len, hidden_dim] 
-        
+
+        # query = F.normalize(log_feats, p=2, dim=-1)  
+        # positive = F.normalize(pos_embs, p=2, dim=-1)  
+        # negatives = F.normalize(neg_embs, p=2, dim=-1)  
+        query = log_feats
+        positive = pos_embs
+        negatives = neg_embs
+
   
         pos_scores = (query * positive).sum(dim=-1) / temperature  
         
@@ -244,8 +254,7 @@ class RecommendationLoss:
         neg_scores = (query.unsqueeze(1) * negatives).sum(dim=-1) / temperature  
         
 
-        loss_mask_expanded = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)  # [batch_size, neg_num, seq_len]
-
+        loss_mask_expanded = loss_mask.unsqueeze(1).expand(-1, neg_embs.shape[1], -1)  
         pos_scores_masked = pos_scores[loss_mask == 1]  
         neg_scores_masked = neg_scores[loss_mask_expanded == 1]  
         
@@ -254,10 +263,10 @@ class RecommendationLoss:
         
 
         neg_num = neg_embs.shape[1]
-        neg_scores_reshaped = neg_scores_masked.view(pos_scores_masked.size(0), neg_num)  # [N, neg_num]
+        neg_scores_reshaped = neg_scores_masked.view(pos_scores_masked.size(0), neg_num)  
         
        
-        all_scores = torch.cat([pos_scores_masked.unsqueeze(1), neg_scores_reshaped], dim=1)  # [N, 1 + neg_num]
+        all_scores = torch.cat([pos_scores_masked.unsqueeze(1), neg_scores_reshaped], dim=1)  
         
     
         targets = torch.zeros(all_scores.size(0), dtype=torch.long, device=log_feats.device)
@@ -265,48 +274,18 @@ class RecommendationLoss:
    
         loss = F.cross_entropy(all_scores, targets)
         
-        return loss
+        return loss, torch.mean(pos_scores_masked).item(), torch.mean(neg_scores_masked).item(), torch.var(neg_scores_masked).item()
 
-
-
-
-
-class InfoNCELoss(nn.Module):
+class SoftWeightLoss(nn.Module):
     """
-    InfoNCE损失函数（对比学习中常用）
+    Soft Weight Loss for recommendation tasks
     """
-    
-    def __init__(self, temperature=0.1):
-        super(InfoNCELoss, self).__init__()
-        self.temperature = temperature
-    
-    def forward(self, query, positive, negatives):
-        """
-        计算InfoNCE损失
-        
-        Args:
-            query: 查询向量 [batch_size, dim]
-            positive: 正样本向量 [batch_size, dim]
-            negatives: 负样本向量 [batch_size, num_negatives, dim]
-        """
-        # 归一化
-        query = F.normalize(query, dim=-1)
-        positive = F.normalize(positive, dim=-1)
-        negatives = F.normalize(negatives, dim=-1)
-        
-        # 计算正样本得分
-        pos_score = torch.sum(query * positive, dim=-1) / self.temperature  # [batch_size]
-        
-        # 计算负样本得分
-        neg_scores = torch.sum(query.unsqueeze(1) * negatives, dim=-1) / self.temperature  # [batch_size, num_negatives]
-        
-        # 合并得分
-        all_scores = torch.cat([pos_score.unsqueeze(1), neg_scores], dim=1)  # [batch_size, 1 + num_negatives]
-        
-        # 正样本标签为0
-        targets = torch.zeros(all_scores.size(0), dtype=torch.long, device=all_scores.device)
-        
-        # 计算交叉熵损失
-        loss = F.cross_entropy(all_scores, targets)
-        
-        return loss
+    def __init__(self, num_loss):
+        super(SoftWeightLoss, self).__init__()
+        self.log_vars = nn.Parameter(torch.ones(num_loss), requires_grad=True)
+
+    def forward(self, losses):
+        weight = [1/(2 * log_var**2) for log_var in self.log_vars]
+        total_loss = sum(w * l for w, l in zip(weight, losses)) + torch.sum(torch.log(self.log_vars))
+        return total_loss
+

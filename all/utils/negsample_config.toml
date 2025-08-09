@@ -10,8 +10,13 @@ neg_seq = 0
 pos_seq = 0
 neg_batch = 0
 pos_batch = 0
-mix_ratio = 1
+mix_ratio = [1,5]
 shuffle_all_num = 500
+
+[in_eval]
+mix_ratio = [1,4]
+shuffle_all_num = 100
+
 
 
 

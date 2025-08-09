@@ -146,7 +146,7 @@ if __name__ == '__main__':
     pprint.pprint(vars(args))
     
     dataset = MyDataset(data_path, args)
-    train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [0.9, 0.1])
+    train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [0.99, 0.01])
     # train_dataset = valid_dataset = dataset
     
     # 读取负样本配置
@@ -238,7 +238,7 @@ if __name__ == '__main__':
             print(f"Generating batchsize{len(seq)} from {args.batch_size}, time_generate={time_generate:.2f}s")
      
             # 前向传播
-            loss = model(
+            loss, pos_score, neg_score, neg_var = model(
                 seq, pos, neg, token_type, next_token_type, next_action_type, 
                 seq_feat, pos_feat, neg_feat, loss_type=args.loss_type
             )
@@ -290,6 +290,10 @@ if __name__ == '__main__':
                     print(log_json)
                     print(f"Generate batchsize{len(seq)} from {args.batch_size}, time_generate={time_generate:.2f}s")
                     writer.add_scalar('Loss/train', avg_accumulated_loss, global_step)
+                    writer.add_scalar('Loss/score/pos_score', pos_score, global_step)
+                    writer.add_scalar('Loss/score/neg_score', neg_score, global_step)
+                    writer.add_scalar('Loss/neg_var', neg_var, global_step)
+
                 
                 # 重置累积损失
                 epoch_loss += accumulated_loss * args.grad_accumulation_steps
@@ -317,6 +321,7 @@ if __name__ == '__main__':
                     
                     hr_k = evaluate_metrics(log_feats, pos_embs, neg_embs, loss_mask, k_list=args.eval_hr_k, loss_type=args.loss_type)
                     valid_loss_sum += loss.item()
+                    loss_bce, _, _, _ = loss_bce
                     valid_bce_loss_sum += loss_bce.item()
                     for k, v in hr_k.items():
                         batch_hr_k[k] = batch_hr_k.get(k, 0.0) + v

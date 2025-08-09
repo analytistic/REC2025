@@ -11,10 +11,10 @@ def evaluate_metrics(log_feats, pos_embs, neg_embs, loss_mask, k_list=[1, 3], lo
     - HitRate@k, 计算正样本在前k个预测中的准确率
     """
     distance = {    
-        'infonce': 'cosine',
+        'infonce': 'dot',
         'bce': 'dot',
         'bpr': 'dot',
-        'cosine_triplet': 'dot',
+        'cosine_triplet': 'cosine',
         'triplet': 'euclidean'
     }
 

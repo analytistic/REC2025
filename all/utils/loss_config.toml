@@ -9,12 +9,9 @@ margin = 1.0
 [triplet]
 margin = 1.0
 
-[triplet_loss]
-margin = 1
-reduction = 'mean'
 
 [cosine_triplet]
-margin = 1.0
+margin = 0.5
 
 [listwise_contrastive]
 temperature = 0.1
@@ -24,4 +21,4 @@ alpha = 0.25
 gamma = 2.0
 
 [infonce]
-temperature = 0.1
+temperature = 0.15

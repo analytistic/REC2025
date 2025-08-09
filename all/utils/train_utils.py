@@ -17,9 +17,9 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     return LambdaLR(optimizer, lr_lambda)
 
 
-def get_cosine_schedule_with_warmup_restarts(optimizer, num_warmup_steps, T_0, T_mult=1, eta_min_ratio=0.0):
+def get_cosine_schedule_with_warmup_restarts(optimizer, num_warmup_steps, T_0, T_mult=1, eta_min_ratio=0.0, restart_ratio=0.6):
     """
-    带warmup和重启的余弦退火学习率调度器 (SGDR)
+    带warmup和重启的余弦退火学习率调度器 (SGDR)，支持restart_ratio
     
     Args:
         optimizer: 优化器
@@ -27,6 +27,7 @@ def get_cosine_schedule_with_warmup_restarts(optimizer, num_warmup_steps, T_0, T
         T_0: 第一个重启周期的步数
         T_mult: 每次重启后周期长度的倍数
         eta_min_ratio: 最小学习率比例
+        restart_ratio: 每次重启最大lr的缩放因子
     """
     def lr_lambda(current_step):
         # Warmup阶段
@@ -46,10 +47,11 @@ def get_cosine_schedule_with_warmup_restarts(optimizer, num_warmup_steps, T_0, T
             epoch_i += 1
             T_i *= T_mult
         
-        # 在当前周期内的余弦退火
+        # restart_ratio控制每次重启最大lr递减
+        max_lr_scale = restart_ratio ** epoch_i
         progress = T_cur / T_i
         cosine_factor = 0.5 * (1.0 + np.cos(np.pi * progress))
-        return eta_min_ratio + (1.0 - eta_min_ratio) * cosine_factor
+        return max_lr_scale * (eta_min_ratio + (1.0 - eta_min_ratio) * cosine_factor)
     
     return LambdaLR(optimizer, lr_lambda)
 
@@ -131,7 +133,8 @@ def create_scheduler(optimizer, config, total_steps):
             num_warmup_steps=scheduler_config['warmup_steps'],
             T_0=scheduler_config['T_0'],
             T_mult=scheduler_config.get('T_mult', 1),
-            eta_min_ratio=scheduler_config.get('eta_min_ratio', 0.0)
+            eta_min_ratio=scheduler_config.get('eta_min_ratio', 0.0),
+            restart_ratio=scheduler_config.get('restart_ratio', 1.0)
         )
     elif scheduler_type == "constant":
         scheduler = LambdaLR(optimizer, lambda step: 1.0)

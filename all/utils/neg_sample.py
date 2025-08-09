@@ -204,7 +204,7 @@ def train_neg_sample(pos_emb, neg_emb, mask):
 
     return neg_emb
 
-def train_batch_shuffling_all(pos_emb, neg_emb, mix_ratio=2.0, sample_num=100, hot_emb=None):
+def train_batch_shuffling_all(pos_emb, neg_emb, mix_ratio=[0,1], sample_num=100, mask=None, hot_emb=None):
     """
     直接负采样,不管是不是padding位置
     Args:
@@ -219,22 +219,55 @@ def train_batch_shuffling_all(pos_emb, neg_emb, mix_ratio=2.0, sample_num=100, h
     bs, seq_len, emb_dim = pos_emb.shape
     _, num_neg, _, _ = neg_emb.shape
     
-
+    if sample_num == 0:
+        return torch.empty((bs, 0, seq_len, emb_dim), dtype=neg_emb.dtype, device=neg_emb.device)
     
+    if mask is None:
+        pos_expanded = pos_emb.unsqueeze(1).repeat(1, int(mix_ratio[0] * 1), 1, 1)
+        neg_emb = neg_emb.repeat(1, int(mix_ratio[1] * num_neg), 1, 1)
+        candidates = torch.cat([pos_expanded, neg_emb], dim=1)
+        num_neg = candidates.shape[1]
 
-    pos_expanded = pos_emb.unsqueeze(1)  
-    neg_emb = neg_emb.repeat(1, int(mix_ratio * num_neg), 1, 1)
-    candidates = torch.cat([pos_expanded, neg_emb], dim=1)  
-    num_neg = candidates.shape[1]  
-    
+        batch_indices = torch.randint(0, bs, (bs, sample_num, seq_len), device=pos_emb.device)
+        neg_indices = torch.randint(0, num_neg, (bs, sample_num, seq_len), device=pos_emb.device)
+        seq_indices = torch.randint(0, seq_len, (bs, sample_num, seq_len), device=pos_emb.device)
+        
+        new_neg_emb = candidates[batch_indices, neg_indices, seq_indices, :] 
 
-    batch_indices = torch.randint(0, bs, (bs, sample_num, seq_len), device=pos_emb.device)
-    neg_indices = torch.randint(0, num_neg, (bs, sample_num, seq_len), device=pos_emb.device)
-    seq_indices = torch.randint(0, seq_len, (bs, sample_num, seq_len), device=pos_emb.device)
-    
-    new_neg_emb = candidates[batch_indices, neg_indices, seq_indices, :] 
+        return new_neg_emb
+    else:
+        pos_expanded = pos_emb.unsqueeze(1).repeat(1, int(mix_ratio[0] * 1), 1, 1)
+        neg_emb = neg_emb.repeat(1, int(mix_ratio[1] * num_neg), 1, 1)
+        candidates = torch.cat([pos_expanded, neg_emb], dim=1)  
 
-    return new_neg_emb
 
+        valid_indices = torch.where(mask.unsqueeze(1).expand(-1, candidates.shape[1], -1) == 1)  # (batch_idx, neg_idx, seq_idx)
+        num_valid = valid_indices[0].shape[0]
+
+
+        rand_idx = torch.randint(0, num_valid, (bs, sample_num, seq_len), device=mask.device)
+
+        batch_idx = valid_indices[0][rand_idx]
+        neg_idx = valid_indices[1][rand_idx]
+        seq_idx = valid_indices[2][rand_idx]
+
+        # 生成与正样本冲突位置
+        pos_emb = pos_emb.unsqueeze(1).expand(-1, sample_num, -1, -1)
+        new_neg_emb = candidates[batch_idx, neg_idx, seq_idx, :]  # shape: (bs, sample_num, seq_len, emb_dim)
+
+        index_conflict = torch.where(torch.sum(torch.abs(new_neg_emb - pos_emb), dim=-1) == 0)
+
+        if len(index_conflict[0]) > 0:
+            conflict_mask = torch.zeros((bs, seq_len), dtype=torch.bool, device=mask.device)
+            conflict_mask[index_conflict[0], index_conflict[2]] = True
+            final_mask = mask & (~conflict_mask)
+            final_indices = torch.where(final_mask.unsqueeze(1).expand(-1, candidates.shape[1], -1) == 1)
+            rand_final_idx = torch.randint(0, final_indices[0].shape[0], index_conflict[0].shape, device=mask.device)
+            new_idx = final_indices[0][rand_final_idx], final_indices[1][rand_final_idx], final_indices[2][rand_final_idx]
+            new_neg_emb[index_conflict[0], index_conflict[1], index_conflict[2], :] = candidates[new_idx[0], new_idx[1], new_idx[2], :]
+
+
+
+        return new_neg_emb
 
 
