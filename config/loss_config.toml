@@ -1,0 +1,31 @@
+[bce]
+alpha = 1.0
+beta = 1.0
+reduction = "mean"
+
+[bpr]
+margin = 1.0
+
+[triplet]
+margin = 1.0
+
+
+[cosine_triplet]
+margin = 0.5
+
+[listwise_contrastive]
+temperature = 0.1
+
+[focal]
+alpha = 0.25
+gamma = 2.0
+
+[infonce]
+temperature = 0.1
+sim = "dot"
+
+[inbatch_infonce_loss]
+temperature = 0.1
+sim = "dot"
+rowmask = true
+

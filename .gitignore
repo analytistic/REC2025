@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+
+
+# checkpoints
+checkpoints/
+
+# VSCode
+.vscode/
+
+
+# 环境/依赖
+*.env
+
+
+# 数据/模型/输出
+logs/
+
+TencentGR_1k/
+
+tb_output/
+
+predict/
+
+# 压缩包
+*.zip
+
+
+

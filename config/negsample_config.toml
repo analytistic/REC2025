@@ -1,0 +1,20 @@
+random = 1
+
+[in_batch]
+seq_shuffling = 0
+batch_shuffling = 0
+shift_change = [0,0]
+
+[in_train]
+from_pos = 0.5
+from_neg = 0.5
+sample_num = 100
+
+[in_eval]
+from_pos = 0.5
+from_neg = 0.5
+sample_num = 100
+
+
+
+
