@@ -11,8 +11,10 @@ class EmbeddingFusionGate(nn.Module):
 
 
     def forward(self, id_emb, feat_emb):
+        
 
         g = torch.sigmoid(self.gate(torch.cat([id_emb, feat_emb], dim=-1)))
+
         output = id_emb * g + feat_emb * (1 - g)
 
 

@@ -13,13 +13,13 @@ l2_emb = 0.0
 [optimizer]
 # type = "adamw"
 type = "adamw"
-lr = 0.001
+lr = 0.01
 betas = [0.9, 0.98]
 weight_decay = 1e-4
 eps = 1e-8
 
 [scheduler]
-act = true
+act = false
 type = "cosine_with_warmup_restarts"  
 # type = 'constant'
 warmup_steps = 1000

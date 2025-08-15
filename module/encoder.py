@@ -1,9 +1,18 @@
 import torch
 import torch.nn.functional as F
 from .gater import Gatelayer
+from .emb_fusion import EmbeddingFusionGate
 
 
+class CrossFeatFusion(torch.nn.Module):
+    def __init__(self, cat_dim, hidden_units):
+        super(CrossFeatFusion, self).__init__()
+        self.gate = EmbeddingFusionGate(cat_emb_dim=cat_dim, fusion_dim=hidden_units)
 
+    def forward(self, user_emb, item_emb):
+        user_emb = user_emb.expand(-1, item_emb.shape[1], -1) 
+        fusion_emb = self.gate(user_emb, item_emb)
+        return fusion_emb
 
 class GLUFeedForward(torch.nn.Module):
     def __init__(self, hidden_units, out_units, droupout_rate):
@@ -120,7 +129,7 @@ class MoeFFN(torch.nn.Module):
 
 class LogEncoder(torch.nn.Module):
     """
-    [user, user] [item1, item1*user] [item2, item2*user] -> [item1, item2, item3]
+   
     """
     def __init__(self, args):
         super(LogEncoder, self).__init__()
@@ -129,6 +138,7 @@ class LogEncoder(torch.nn.Module):
 
         self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
+        self.cross_fusion = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
 
         self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
         self.attention_layers = torch.nn.ModuleList()
@@ -178,10 +188,10 @@ class LogEncoder(torch.nn.Module):
         batch_size, maxlen, _ = seqs.shape
         seqs *= scale
         poss = torch.arange(1, maxlen + 1, device=seqs.device).unsqueeze(0).expand(batch_size, -1).clone()
-        poss *= torch.tensor(mask != 0, device=seqs.device).long() 
-        # user_index = torch.clamp((mask == 1).float().argmax(dim=1)-1, min=0)
-        # user_feat = seqs[torch.arange(batch_size, device=seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
-        # cross_seqs = seqs * user_feat
+        poss *= (mask != 0).long().to(seqs.device)
+        user_index = torch.clamp((mask == 1).float().argmax(dim=1)-1, min=0)
+        user_feat = seqs[torch.arange(batch_size, device=seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
+        seqs = self.cross_fusion(user_feat, seqs)
         # cross_seqs *= scale
         # seqs = seqs + cross_seqs
         seqs += self.pos_emb(poss) 

@@ -29,8 +29,8 @@ def set_seed(seed):
 
 set_seed(3407) 
 
-# from dotenv import load_dotenv
-# load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
+from dotenv import load_dotenv
+load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
 
 
 def get_args():
@@ -211,9 +211,9 @@ if __name__ == '__main__':
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
         writer.add_scalar('Loss/valid_bce', valid_bce_sum, global_step)
 
-        save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}.valid_loss={valid_loss_sum:.4f}")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), save_dir / "model.pt")
+        # save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}.valid_loss={valid_loss_sum:.4f}")
+        # save_dir.mkdir(parents=True, exist_ok=True)
+        # torch.save(model.state_dict(), save_dir / "model.pt")
         # if epoch == 2:
         #     for param_group in optimizer.param_groups:
         #         param_group['lr'] *= 0.5
