@@ -1,5 +1,5 @@
 loss_type = "bce"
-sub_loss = []
+sub_loss = ["infonce"]
 
 [weight_loss]
 act = true

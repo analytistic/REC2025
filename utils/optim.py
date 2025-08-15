@@ -101,6 +101,12 @@ def get_optim(cfg, model):
             lr=args.lr,
             betas=(args.betas[0], args.betas[1]),
         )
+    elif args.type == 'sparse_adam':
+        optimizer = optim.SparseAdam(
+            get_parameter_groups(model, args),
+            lr=args.lr,
+            betas=(args.betas[0], args.betas[1]),
+        )
     elif args.type == 'adamw':
         optimizer = optim.AdamW(
             get_parameter_groups(model, args),
