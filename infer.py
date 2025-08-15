@@ -4,6 +4,16 @@ import os
 import struct
 from pathlib import Path
 
+
+os.system(f"unzip -n {os.path.dirname(__file__)}/all.zip -d {os.path.dirname(__file__)}")
+print("Files after unzip (recursive):")
+for root, dirs, files in os.walk(os.path.dirname(__file__)):
+    for name in files:
+        print(os.path.relpath(os.path.join(root, name), os.path.dirname(__file__)))
+os.system(f"pip install toml")
+
+
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -12,6 +22,18 @@ from tqdm import tqdm
 from dataset import MyTestDataset, save_emb
 from model import BaselineModel
 
+from config import BaseConfig
+
+import random
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(42) 
 
 def get_ckpt_path():
     ckpt_path = os.environ.get("MODEL_OUTPUT_PATH")
@@ -24,6 +46,9 @@ def get_ckpt_path():
 
 def get_args():
     parser = argparse.ArgumentParser()
+
+    # distance
+    parser.add_argument('--distance', default='cosine', type=str, choices=['dot', 'cosine'])
 
     # Train params
     parser.add_argument('--batch_size', default=128, type=int)
@@ -88,7 +113,7 @@ def process_cold_start_feat(feat):
     return processed_feat
 
 
-def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, model):
+def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, model, args):
     """
     生产候选库item的id和embedding
 
@@ -133,7 +158,7 @@ def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, mode
             retrieve_id2creative_id[retrieval_id] = creative_id
 
     # 保存候选库的embedding和sid
-    model.save_item_emb(item_ids, retrieval_ids, features, os.environ.get('EVAL_RESULT_PATH'))
+    model.save_item_emb(item_ids, retrieval_ids, features, os.environ.get('EVAL_RESULT_PATH'), distance=args.distance)
     with open(Path(os.environ.get('EVAL_RESULT_PATH'), "retrive_id2creative_id.json"), "w") as f:
         json.dump(retrieve_id2creative_id, f)
     return retrieve_id2creative_id
@@ -141,6 +166,9 @@ def get_candidate_emb(indexer, feat_types, feat_default_value, mm_emb_dict, mode
 
 def infer():
     args = get_args()
+
+    config_path = os.path.join(os.path.dirname(__file__), 'config/')
+    cfg = BaseConfig(config_path, vars(args))
     data_path = os.environ.get('EVAL_DATA_PATH')
     test_dataset = MyTestDataset(data_path, args)
     test_loader = DataLoader(
@@ -148,7 +176,7 @@ def infer():
     )
     usernum, itemnum = test_dataset.usernum, test_dataset.itemnum
     feat_statistics, feat_types = test_dataset.feat_statistics, test_dataset.feature_types
-    model = BaselineModel(usernum, itemnum, feat_statistics, feat_types, args).to(args.device)
+    model = BaselineModel(usernum, itemnum, feat_statistics, feat_types, cfg).to(args.device)
     model.eval()
 
     ckpt_path = get_ckpt_path()
@@ -159,7 +187,7 @@ def infer():
 
         seq, token_type, seq_feat, user_id = batch
         seq = seq.to(args.device)
-        logits = model.predict(seq, seq_feat, token_type)
+        logits = model.predict(seq, seq_feat, token_type, distance=args.distance)
         for i in range(logits.shape[0]):
             emb = logits[i].unsqueeze(0).detach().cpu().numpy().astype(np.float32)
             all_embs.append(emb)
@@ -172,6 +200,7 @@ def infer():
         test_dataset.feature_default_value,
         test_dataset.mm_emb_dict,
         model,
+        args
     )
     all_embs = np.concatenate(all_embs, axis=0)
     # 保存query文件

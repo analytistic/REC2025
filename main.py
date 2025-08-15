@@ -13,12 +13,24 @@ from tqdm import tqdm
 from dataset import MyDataset
 from model import BaselineModel
 from config import BaseConfig
-from utils import evaluate_metrics, log_gradient_stats, clip_gradients
+from utils import evaluate_metrics, log_gradient_stats, clip_gradients, get_optim, get_cosine_schedule_with_warmup
 
+import random
+import numpy as np
+import torch
 
+def set_seed(seed):
+    # random.seed(seed)
+    # np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-from dotenv import load_dotenv
-load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env')
+set_seed(3407) 
+
+# from dotenv import load_dotenv
+# load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
 
 
 def get_args():
@@ -32,7 +44,7 @@ def get_args():
     # Baseline Model construction
     parser.add_argument('--hidden_units', default=32, type=int)
     parser.add_argument('--num_blocks', default=1, type=int)
-    parser.add_argument('--num_epochs', default=20, type=int)
+    parser.add_argument('--num_epochs', default=5, type=int)
     parser.add_argument('--num_heads', default=1, type=int)
     parser.add_argument('--dropout_rate', default=0.2, type=float)
     parser.add_argument('--l2_emb', default=0.0, type=float)
@@ -40,10 +52,10 @@ def get_args():
     parser.add_argument('--inference_only', action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
     parser.add_argument('--norm_first', action='store_true')
-    parser.add_argument('--loss_type', default='bce', type=str, choices=['infonce', 'bce', 'bpr', 'cosine_triplet', 'triplet', 'inbatch_infonce'])
+    parser.add_argument('--loss_type', default='bce', type=str, choices=['infonce', 'bce', 'bpr', 'cosine_triplet', 'triplet', 'inbatch_infonce', 'ado_infonce'])
 
     # MMemb Feature ID
-    parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
+    parser.add_argument('--mm_emb_id', nargs='+', default=[], type=str, choices=[str(s) for s in range(81, 87)])
 
     args = parser.parse_args()
 
@@ -63,7 +75,8 @@ if __name__ == '__main__':
     cfg = BaseConfig(config_path, vars(args))
 
     dataset = MyDataset(data_path, args)
-    train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [0.9, 0.1])
+    
+    train_dataset, valid_dataset = torch.utils.data.random_split(dataset, [0.99, 0.01])
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=dataset.collate_fn
     )
@@ -101,7 +114,10 @@ if __name__ == '__main__':
             raise RuntimeError('failed loading state_dicts, pls check file path!')
 
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
+    optimizer = get_optim(cfg, model)
+    if cfg.scheduler.act:
+        scheduler = get_cosine_schedule_with_warmup(optimizer, cfg.scheduler, len(train_loader) * args.num_epochs)
+
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
     best_test_ndcg, best_test_hr = 0.0, 0.0
@@ -109,7 +125,9 @@ if __name__ == '__main__':
     t0 = time.time()
     global_step = 0
     print("Start training")
+    print(model)
     for epoch in range(epoch_start_idx, args.num_epochs + 1):
+        
         model.train()
         if args.inference_only:
             break
@@ -147,35 +165,44 @@ if __name__ == '__main__':
 
 
             global_step += 1
-
-            for param in model.item_emb.parameters():
-                loss += args.l2_emb * torch.norm(param)
+            if args.l2_emb > 0.0:
+                for param in model.item_emb.parameters():
+                    loss += args.l2_emb * torch.norm(param)
             loss.backward()
 
             log_gradient_stats(model, writer, global_step, log_freq=cfg.logging.log_grad_freq)
-            clip_gradients(model, cfg.grad_clip_norm)
+            if epoch >= 2:
+                clip_gradients(model, cfg.grad_clip_norm)
             optimizer.step()
+            if cfg.scheduler.act:
+                scheduler.step()
+                writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], global_step)
+
+                    
+
 
         model.eval()
         valid_loss_sum = 0
         valid_bce_sum = 0
         batch_acc_k = {}
-        for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
-            seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
-            seq = seq.to(args.device)
-            pos = pos.to(args.device)
-            neg = neg.to(args.device)
-            main_loss, bce_loss, log_feats, pos_embs, candidate_item, loss_mask = model(
-                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
-            )
-            acc_k = evaluate_metrics(
-                log_feats, pos_embs, candidate_item, loss_mask, cfg.eval.acc_k, distance=cfg.eval.distance
-            )
-            for k, v in acc_k.items():
-                batch_acc_k[k] = batch_acc_k.get(k, 0.0) + v
+        with torch.no_grad():
+            for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
+                seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
+                seq = seq.to(args.device)
+                pos = pos.to(args.device)
+                neg = neg.to(args.device)
+                main_loss, bce_loss, log_feats, pos_embs, candidate_item, loss_mask = model(
+                    seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat
+                )
+                acc_k = evaluate_metrics(
+                    log_feats, pos_embs, candidate_item, loss_mask, cfg.eval.acc_k, distance=cfg.eval.distance
+                )
+                for k, v in acc_k.items():
+                    batch_acc_k[k] = batch_acc_k.get(k, 0.0) + v
 
-            valid_loss_sum += main_loss.item()
-            valid_bce_sum += bce_loss.item()
+                valid_loss_sum += main_loss.item()
+                valid_bce_sum += bce_loss.item()
+
         valid_loss_sum /= len(valid_loader)
         valid_bce_sum /= len(valid_loader)
         for k, v in batch_acc_k.items():
@@ -184,9 +211,23 @@ if __name__ == '__main__':
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
         writer.add_scalar('Loss/valid_bce', valid_bce_sum, global_step)
 
-        # save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}.valid_loss={valid_loss_sum:.4f}")
-        # save_dir.mkdir(parents=True, exist_ok=True)
-        # torch.save(model.state_dict(), save_dir / "model.pt")
+        save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}.valid_loss={valid_loss_sum:.4f}")
+        save_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), save_dir / "model.pt")
+        # if epoch == 2:
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] *= 0.5
+        # if epoch == 4:
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] *= 0.75
+        # if epoch >= 5:
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] *= 0.75
+        # writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], global_step)
+
+
+
+
 
     print("Done")
     writer.close()

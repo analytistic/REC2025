@@ -23,7 +23,14 @@
 #     echo "No all.zip found, assuming files are already in place"
 # fi
 
+# python -u main.py --loss_type bce --device cuda --num_blocks 1 --num_heads 1 --hidden_units 32
 
+# # write your code below
+# python -u main.py --loss_type bce --device cpu
 
-# write your code below
-python -u main.py --loss_type bce --device cpu
+# python -u main.py --loss_type bce --device cpu --num_blocks 4 --num_heads 4 --hidden_units 64
+# python -u main.py --loss_type inbatch_infonce --device cuda --num_blocks 4 --num_heads 4 --hidden_units 64
+# python -u main.py --loss_type infonce --device cpu
+# python -u main.py --loss_type infonce --device cpu
+# python -u main.py --loss_type cosine_triplet --device cpu --num_blocks 1 --num_heads 1 --hidden_units 32
+python -u main.py --loss_type ado_infonce --device cpu --num_blocks 1 --num_heads 1 --hidden_units 32 --num_epochs 60

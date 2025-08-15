@@ -7,9 +7,10 @@ from tqdm import tqdm
 
 from dataset import save_emb
 
-from module import FlashMultiHeadAttention, PointWiseFeedForward, UserDnn, ItemDnn
+from module import FlashMultiHeadAttention, PointWiseFeedForward, UserDnn, ItemDnn, LogEncoder
 from utils import RecommendLoss
 from utils import NegSample
+
 
 
 class BaselineModel(torch.nn.Module):
@@ -44,6 +45,7 @@ class BaselineModel(torch.nn.Module):
         self.norm_first = args.norm_first
         self.maxlen = args.maxlen
         self.loss_func = RecommendLoss(args, loss_type=args.loss_type)
+
         self.sub_loss = [loss for loss in args.sub_loss if loss != '']
         self.neg_sample = NegSample(args)
         self.args = args
@@ -58,10 +60,7 @@ class BaselineModel(torch.nn.Module):
         self.sparse_emb = torch.nn.ModuleDict()
         self.emb_transform = torch.nn.ModuleDict()
 
-        self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
-        self.attention_layers = torch.nn.ModuleList()
-        self.forward_layernorms = torch.nn.ModuleList()
-        self.forward_layers = torch.nn.ModuleList()
+
 
         self._init_feat_info(feat_statistics, feat_types)
 
@@ -74,25 +73,10 @@ class BaselineModel(torch.nn.Module):
             + args.hidden_units * len(self.ITEM_EMB_FEAT)
         )
 
-        self.userdnn = UserDnn(userdim, args.hidden_units)
-        self.itemdnn = ItemDnn(itemdim, args.hidden_units)
+        self.userdnn = UserDnn(args.hidden_units, userdim-args.hidden_units, args.hidden_units)
+        self.itemdnn = ItemDnn(args.hidden_units, itemdim-args.hidden_units, args.hidden_units)
+        self.logencoder = LogEncoder(args)
 
-        self.last_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-
-        for _ in range(args.num_blocks):
-            new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-            self.attention_layernorms.append(new_attn_layernorm)
-
-            new_attn_layer = FlashMultiHeadAttention(
-                args.hidden_units, args.num_heads, args.dropout_rate
-            )  # 优化：用FlashAttention替代标准Attention
-            self.attention_layers.append(new_attn_layer)
-
-            new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
-            self.forward_layernorms.append(new_fwd_layernorm)
-
-            new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
-            self.forward_layers.append(new_fwd_layer)
 
         for k in self.USER_SPARSE_FEAT:
             self.sparse_emb[k] = torch.nn.Embedding(self.USER_SPARSE_FEAT[k] + 1, args.hidden_units, padding_idx=0)
@@ -236,11 +220,17 @@ class BaselineModel(torch.nn.Module):
             item_feat_list.append(self.emb_transform[k](tensor_feature))
 
         # merge features
-        all_item_emb = torch.cat(item_feat_list, dim=2)
-        all_item_emb = self.itemdnn(all_item_emb)
+        # all_item_emb = torch.cat(item_feat_list, dim=2)
+        # all_item_emb = self.itemdnn(all_item_emb)
+        item_id_emb = item_feat_list[0]
+        item_feats_list = item_feat_list[1:]
+        all_item_emb = self.itemdnn(item_id_emb, torch.stack(item_feats_list, dim=2))
         if include_user:
-            all_user_emb = torch.cat(user_feat_list, dim=2)
-            all_user_emb = self.userdnn(all_user_emb)
+            # all_user_emb = torch.cat(user_feat_list, dim=2)
+            # all_user_emb = self.userdnn(all_user_emb)
+            user_id_emb = user_feat_list[0]
+            user_feats_list = user_feat_list[1:]
+            all_user_emb = self.userdnn(user_id_emb, torch.stack(user_feats_list, dim=2))
             seqs_emb = all_item_emb + all_user_emb
         else:
             seqs_emb = all_item_emb
@@ -259,30 +249,8 @@ class BaselineModel(torch.nn.Module):
         batch_size = log_seqs.shape[0]
         maxlen = log_seqs.shape[1]
         seqs = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
-        seqs *= self.item_emb.embedding_dim**0.5
-        poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
-        poss *= log_seqs != 0
-        seqs += self.pos_emb(poss)
-        seqs = self.emb_dropout(seqs)
+        log_feats = self.logencoder(seqs, mask, scale=self.item_emb.embedding_dim**0.5)
 
-        maxlen = seqs.shape[1]
-        ones_matrix = torch.ones((maxlen, maxlen), dtype=torch.bool, device=self.dev)
-        attention_mask_tril = torch.tril(ones_matrix)
-        attention_mask_pad = (mask != 0).to(self.dev)
-        attention_mask = attention_mask_tril.unsqueeze(0) & attention_mask_pad.unsqueeze(1)
-
-        for i in range(len(self.attention_layers)):
-            if self.norm_first:
-                x = self.attention_layernorms[i](seqs)
-                mha_outputs, _ = self.attention_layers[i](x, x, x, attn_mask=attention_mask)
-                seqs = seqs + mha_outputs
-                seqs = seqs + self.forward_layers[i](self.forward_layernorms[i](seqs))
-            else:
-                mha_outputs, _ = self.attention_layers[i](seqs, seqs, seqs, attn_mask=attention_mask)
-                seqs = self.attention_layernorms[i](seqs + mha_outputs)
-                seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
-
-        log_feats = self.last_layernorm(seqs)
 
         return log_feats
 
@@ -309,6 +277,8 @@ class BaselineModel(torch.nn.Module):
         """
         log_feats = self.log2feats(user_item, mask, seq_feature)
         loss_mask = (next_mask == 1).to(self.dev)
+        act_1_mask = (next_action_type == 1).to(self.dev)
+        act_0_mask = (next_action_type == 0).to(self.dev)
 
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
         neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
@@ -322,16 +292,16 @@ class BaselineModel(torch.nn.Module):
             neg_embs = neg_embs.unsqueeze(1)
             loss = []
             main_loss, pos_score, neg_score, neg_var, neg_max = self.loss_func(
-                log_feats, pos_embs, neg_embs, loss_mask
+                log_feats, pos_embs, neg_embs, loss_mask, act_1_mask, act_0_mask
             )
             loss.append(main_loss)
-            sub_loss = [RecommendLoss(self.args, loss_type=x)(log_feats, pos_embs, neg_embs, loss_mask)[0] for x in self.sub_loss]
+            sub_loss = [RecommendLoss(self.args, loss_type=x)(log_feats, pos_embs, neg_embs, loss_mask, act_1_mask, act_0_mask)[0] for x in self.sub_loss]
             loss += sub_loss
             return loss, pos_score, neg_score, neg_var, neg_max
         else:
             neg_embs = neg_embs.unsqueeze(1)
             main_loss, pos_score, neg_score, neg_var, neg_max = self.loss_func(
-                log_feats, pos_embs, neg_embs, loss_mask
+                log_feats, pos_embs, neg_embs, loss_mask, act_1_mask, act_0_mask
             )
             # 生成验证集候选物料集
             candidate_item = self.neg_sample.eval_neg_sample(
@@ -344,7 +314,7 @@ class BaselineModel(torch.nn.Module):
 
         
 
-    def predict(self, log_seqs, seq_feature, mask):
+    def predict(self, log_seqs, seq_feature, mask, distance='cosine'):
         """
         计算用户序列的表征
         Args:
@@ -357,10 +327,12 @@ class BaselineModel(torch.nn.Module):
         log_feats = self.log2feats(log_seqs, mask, seq_feature)
 
         final_feat = log_feats[:, -1, :]
+        if distance == 'cosine':
+            final_feat = F.normalize(final_feat, p=2, dim=-1)
 
         return final_feat
 
-    def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024):
+    def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024, distance='cosine'):
         """
         生成候选库item embedding，用于检索
 
@@ -384,6 +356,9 @@ class BaselineModel(torch.nn.Module):
             batch_feat = np.array(batch_feat, dtype=object)
 
             batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
+
+            if distance == 'cosine':
+                batch_emb = F.normalize(batch_emb, p=2, dim=-1)
 
             all_embs.append(batch_emb.detach().cpu().numpy().astype(np.float32))
 

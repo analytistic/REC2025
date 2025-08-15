@@ -6,13 +6,13 @@ batch_shuffling = 0
 shift_change = [0,0]
 
 [in_train]
-from_pos = 0.5
-from_neg = 0.5
+from_pos = 0.1
+from_neg = 0.9
 sample_num = 100
 
 [in_eval]
-from_pos = 0.5
-from_neg = 0.5
+from_pos = 0
+from_neg = 1
 sample_num = 100
 
 

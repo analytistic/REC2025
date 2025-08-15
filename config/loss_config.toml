@@ -1,3 +1,11 @@
+loss_type = "bce"
+sub_loss = []
+
+[weight_loss]
+act = true
+weight = [0.1, 0.9]
+
+
 [bce]
 alpha = 1.0
 beta = 1.0
@@ -7,11 +15,23 @@ reduction = "mean"
 margin = 1.0
 
 [triplet]
-margin = 1.0
+margin = 1
+neg_embs_sample = false
+
+[triplet.use_neg_embs]
+from_pos = 0
+from_neg = 1
+sample_num = 32
 
 
 [cosine_triplet]
 margin = 0.5
+neg_embs_sample = false
+
+[cosine_triplet.use_neg_embs]
+from_pos = 0
+from_neg = 1
+sample_num = 100
 
 [listwise_contrastive]
 temperature = 0.1
@@ -21,11 +41,20 @@ alpha = 0.25
 gamma = 2.0
 
 [infonce]
-temperature = 0.1
-sim = "dot"
+temperature = 0.2
+sim = "cosine"
 
 [inbatch_infonce_loss]
-temperature = 0.1
-sim = "dot"
+temperature = 1
+sim = "cosine"
 rowmask = true
+neg_embs_sample = false 
+
+[inbatch_infonce_loss.use_neg_embs]
+from_pos = 0
+from_neg = 1
+sample_num = 500
+
+[ado_infonce]
+temperature = 0.07
 

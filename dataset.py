@@ -162,6 +162,11 @@ class MyDataset(torch.utils.data.Dataset):
             idx -= 1
             if idx == -1:
                 break
+        # right-padding,额外负采样
+        for pad_idx in range(1+ len(seq)-len(ext_user_sequence)):
+            neg_id = self._random_neq(1, self.itemnum + 1, ts)
+            neg[pad_idx] = neg_id
+            neg_feat[pad_idx] = self.fill_missing_feat(self.item_feat_dict[str(neg_id)], neg_id)
 
         seq_feat = np.where(seq_feat == None, self.feature_default_value, seq_feat)
         pos_feat = np.where(pos_feat == None, self.feature_default_value, pos_feat)
@@ -430,6 +435,13 @@ def save_emb(emb, save_path):
     """
     num_points = emb.shape[0]  # 数据点数量
     num_dimensions = emb.shape[1]  # 向量的维度
+    # 检查一下向量的范数有无归一化
+    try:
+        example = emb[0]
+        norm = np.linalg.norm(example)
+        print(f'Embedding norm: {norm}')
+    except Exception as e:
+        print(f"Error checking embedding norm: {e}")
     print(f'saving {save_path}')
     with open(Path(save_path), 'wb') as f:
         f.write(struct.pack('II', num_points, num_dimensions))

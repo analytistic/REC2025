@@ -1,5 +1,5 @@
 # Python
-__pycache__/
+*__pycache__/
 
 
 # checkpoints
@@ -10,7 +10,7 @@ checkpoints/
 
 
 # 环境/依赖
-*.env
+# *.env
 
 
 # 数据/模型/输出
