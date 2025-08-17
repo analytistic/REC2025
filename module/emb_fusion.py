@@ -26,15 +26,16 @@ class SeNet(nn.Module):
     return: bs, len, dim
     
     """
-    def __init__(self, in_channels, hidden_dim):
+    def __init__(self, in_channels, ex_dim, hidden_dim):
         super(SeNet, self).__init__()
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.excitation = nn.Sequential(
-            nn.Linear(in_channels, hidden_dim),
+            nn.Linear(in_channels, ex_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, in_channels),
+            nn.Linear(ex_dim, in_channels),
             nn.Sigmoid()
         )
+        self.layernorm = nn.RMSNorm(hidden_dim)
 
     
     def forward(self, x):
@@ -42,5 +43,6 @@ class SeNet(nn.Module):
         x = x.reshape(-1, x.shape[-2], x.shape[-1])
 
         reweight = self.excitation(self.pool(x).squeeze(-1))
-        return torch.sum(x * reweight.unsqueeze(-1), dim=-2).reshape(bs, len, dim)
+        x = torch.sum(x * reweight.unsqueeze(-1), dim=-2).reshape(bs, len, dim)
+        return x
 

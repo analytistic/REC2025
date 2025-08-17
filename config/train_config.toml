@@ -1,14 +1,19 @@
 
-num_experts = 4
-
-
-
-
 batch_size = 128
 num_epochs = 6
 grad_clip_norm = 1.0
 grad_accumulation_steps = 1
 l2_emb = 0.0
+
+num_workers = 0
+pin_memory = false
+
+# 混合精度训练配置
+use_amp = false                    # 是否启用自动混合精度
+amp_init_scale = 65536.0         # GradScaler初始缩放因子
+amp_growth_factor = 2.0          # 梯度缩放因子增长倍数
+amp_backoff_factor = 0.5         # 梯度缩放因子回退倍数
+amp_growth_interval = 2000       # 缩放因子更新间隔
 
 [optimizer]
 # type = "adamw"
@@ -18,16 +23,18 @@ betas = [0.9, 0.98]
 weight_decay = 1e-4
 eps = 1e-8
 
+
 [scheduler]
-act = false
+act = true
 type = "cosine_with_warmup_restarts"  
 # type = 'constant'
-warmup_steps = 1000
+warmup_steps = 1500
 min_lr_ratio = 0.3
 T_0 = 5000  
 T_mult = 2   
 eta_min_ratio = 0.05
 restart_ratio = 0.1 
+init_lr_ratio = 0.5
 
 
 [logging]
@@ -35,14 +42,7 @@ log_grad_freq = 10
 log_train_freq = 10
 save_model_freq = 1  # 每多少个epoch保存一次模型
 
-[model]
-hidden_units = 32
-num_blocks = 1
-num_heads = 1
-dropout_rate = 0.2
-maxlen = 101
-norm_first = false
-dff = 32
+
 
 [data]
 num_workers = 0

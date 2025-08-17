@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from dataset import save_emb
 
-from module import FlashMultiHeadAttention, PointWiseFeedForward, UserDnn, ItemDnn, LogEncoder
+from module import FlashMultiHeadAttention, PointWiseFeedForward, UserDnn, ItemDnn, LogEncoder, SeNet, EmbeddingFusionGate
 from utils import RecommendLoss
 from utils import NegSample
 
@@ -53,10 +53,10 @@ class BaselineModel(torch.nn.Module):
         # TODO: loss += args.l2_emb for regularizing embedding vectors during training
         # https://stackoverflow.com/questions/42704283/adding-l1-l2-regularization-in-pytorch
 
-        self.item_emb = torch.nn.Embedding(self.item_num + 1, args.hidden_units, padding_idx=0)
-        self.user_emb = torch.nn.Embedding(self.user_num + 1, args.hidden_units, padding_idx=0)
-        self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
-        self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
+        self.item_emb = torch.nn.Embedding(self.item_num + 1, self.args.model.emb.id_emb, padding_idx=0)
+        self.user_emb = torch.nn.Embedding(self.user_num + 1, self.args.model.emb.id_emb, padding_idx=0)
+
+        self.emb_dropout = torch.nn.Dropout(p=self.args.model.emb.dropout_rate)
         self.sparse_emb = torch.nn.ModuleDict()
         self.emb_transform = torch.nn.ModuleDict()
 
@@ -64,30 +64,33 @@ class BaselineModel(torch.nn.Module):
 
         self._init_feat_info(feat_statistics, feat_types)
 
-        userdim = args.hidden_units * (len(self.USER_SPARSE_FEAT) + 1 + len(self.USER_ARRAY_FEAT)) + len(
-            self.USER_CONTINUAL_FEAT
-        )
-        itemdim = (
-            args.hidden_units * (len(self.ITEM_SPARSE_FEAT) + 1 + len(self.ITEM_ARRAY_FEAT))
-            + len(self.ITEM_CONTINUAL_FEAT)
-            + args.hidden_units * len(self.ITEM_EMB_FEAT)
-        )
+        # userdim = args.hidden_units * (len(self.USER_SPARSE_FEAT) + 1 + len(self.USER_ARRAY_FEAT)) + len(
+        #     self.USER_CONTINUAL_FEAT
+        # )
+        # itemdim = (
+        #     args.hidden_units * (len(self.ITEM_SPARSE_FEAT) + 1 + len(self.ITEM_ARRAY_FEAT))
+        #     + len(self.ITEM_CONTINUAL_FEAT)
+        #     + args.hidden_units * len(self.ITEM_EMB_FEAT)
+        # )
 
-        self.userdnn = UserDnn(args.hidden_units, userdim-args.hidden_units, args.hidden_units)
-        self.itemdnn = ItemDnn(args.hidden_units, itemdim-args.hidden_units, args.hidden_units)
-        self.logencoder = LogEncoder(args)
+        # self.userdnn = UserDnn(args.hidden_units, userdim-args.hidden_units, args.hidden_units)
+        # self.itemdnn = ItemDnn(args.hidden_units, itemdim-args.hidden_units, args.hidden_units)
+        self.userdnn = SeNet(len(self.USER_SPARSE_FEAT) + len(self.USER_ARRAY_FEAT),  args.model.senet.excitation_u, args.model.emb.feat_emb)
+        self.itemdnn = SeNet((len(self.ITEM_SPARSE_FEAT) + len(self.ITEM_ARRAY_FEAT)) + len(self.ITEM_CONTINUAL_FEAT) + len(self.ITEM_EMB_FEAT), args.model.senet.excitation_i, args.model.emb.feat_emb)
+        self.fusion_glu = EmbeddingFusionGate(2*args.model.fusion.hidden_units, args.model.fusion.hidden_units)
+        self.logencoder = LogEncoder(args.model.encoder, self.fusion_glu)
 
 
         for k in self.USER_SPARSE_FEAT:
-            self.sparse_emb[k] = torch.nn.Embedding(self.USER_SPARSE_FEAT[k] + 1, args.hidden_units, padding_idx=0)
+            self.sparse_emb[k] = torch.nn.Embedding(self.USER_SPARSE_FEAT[k] + 1, args.model.emb.feat_emb, padding_idx=0)
         for k in self.ITEM_SPARSE_FEAT:
-            self.sparse_emb[k] = torch.nn.Embedding(self.ITEM_SPARSE_FEAT[k] + 1, args.hidden_units, padding_idx=0)
+            self.sparse_emb[k] = torch.nn.Embedding(self.ITEM_SPARSE_FEAT[k] + 1, args.model.emb.feat_emb, padding_idx=0)
         for k in self.ITEM_ARRAY_FEAT:
-            self.sparse_emb[k] = torch.nn.Embedding(self.ITEM_ARRAY_FEAT[k] + 1, args.hidden_units, padding_idx=0)
+            self.sparse_emb[k] = torch.nn.Embedding(self.ITEM_ARRAY_FEAT[k] + 1, args.model.emb.feat_emb, padding_idx=0)
         for k in self.USER_ARRAY_FEAT:
-            self.sparse_emb[k] = torch.nn.Embedding(self.USER_ARRAY_FEAT[k] + 1, args.hidden_units, padding_idx=0)
+            self.sparse_emb[k] = torch.nn.Embedding(self.USER_ARRAY_FEAT[k] + 1, args.model.emb.feat_emb, padding_idx=0)
         for k in self.ITEM_EMB_FEAT:
-            self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units)
+            self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.model.emb.feat_emb)
 
     def _init_feat_info(self, feat_statistics, feat_types):
         """
@@ -146,7 +149,7 @@ class BaselineModel(torch.nn.Module):
 
             return torch.from_numpy(batch_data).to(self.dev)
 
-    def feat2emb(self, seq, feature_array, mask=None, include_user=False):
+    def feat2emb(self, seq, feature_array, mask=None, include_user=False, fusion=False):
         """
         Args:
             seq: 序列ID
@@ -224,38 +227,45 @@ class BaselineModel(torch.nn.Module):
         # all_item_emb = self.itemdnn(all_item_emb)
         item_id_emb = item_feat_list[0]
         item_feats_list = item_feat_list[1:]
-        all_item_emb = self.itemdnn(item_id_emb, torch.stack(item_feats_list, dim=2))
+        item_feats_emb = self.itemdnn(torch.stack(item_feats_list, dim=2))
         if include_user:
             # all_user_emb = torch.cat(user_feat_list, dim=2)
             # all_user_emb = self.userdnn(all_user_emb)
             user_id_emb = user_feat_list[0]
             user_feats_list = user_feat_list[1:]
-            all_user_emb = self.userdnn(user_id_emb, torch.stack(user_feats_list, dim=2))
-            seqs_emb = all_item_emb + all_user_emb
+            user_feats_emb = self.userdnn(torch.stack(user_feats_list, dim=2))
+            id_emb = user_id_emb + item_id_emb
+            feat_emb = user_feats_emb + item_feats_emb
         else:
-            seqs_emb = all_item_emb
-        return seqs_emb
+            id_emb = item_id_emb
+            feat_emb = item_feats_emb
+        if fusion:
+            return self.fusion_glu(id_emb, feat_emb)
+        else:
+            return id_emb, feat_emb
 
-    def log2feats(self, log_seqs, mask, seq_feature):
+    def log2feats(self, log_seqs, mask, seq_feature, seq_time, seq_action_type):
         """
         Args:
             log_seqs: 序列ID
             mask: token类型掩码，1表示item token，2表示user token
             seq_feature: 序列特征list，每个元素为当前时刻的特征字典
+            seq_time: 序列时间特征
+            seq_action_type: 序列动作类型
 
         Returns:
             seqs_emb: 序列的Embedding，形状为 [batch_size, maxlen, hidden_units]
         """
         batch_size = log_seqs.shape[0]
         maxlen = log_seqs.shape[1]
-        seqs = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
-        log_feats = self.logencoder(seqs, mask, scale=self.item_emb.embedding_dim**0.5)
+        id_emb, feat_emb = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
+        log_feats = self.logencoder(id_emb, feat_emb, mask, seq_time, seq_action_type, scale=self.item_emb.embedding_dim**0.5)
 
 
         return log_feats
 
     def forward(
-        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature
+        self, user_item, pos_seqs, neg_seqs, mask, next_mask, next_action_type, seq_feature, pos_feature, neg_feature, seq_time, seq_action_type
     ):
         """
         训练时调用，计算正负样本的logits
@@ -275,18 +285,18 @@ class BaselineModel(torch.nn.Module):
             pos_logits: 正样本logits，形状为 [batch_size, maxlen]
             neg_logits: 负样本logits，形状为 [batch_size, maxlen]
         """
-        log_feats = self.log2feats(user_item, mask, seq_feature)
+        log_feats = self.log2feats(user_item, mask, seq_feature, seq_time, seq_action_type)
         loss_mask = (next_mask == 1).to(self.dev)
         act_1_mask = (next_action_type == 1).to(self.dev)
         act_0_mask = (next_action_type == 0).to(self.dev)
 
-        pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
-        neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
+        pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False, fusion=True)
+        neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False, fusion=True)
 
-        pos_logits = (log_feats * pos_embs).sum(dim=-1)
-        neg_logits = (log_feats * neg_embs).sum(dim=-1)
-        pos_logits = pos_logits * loss_mask
-        neg_logits = neg_logits * loss_mask
+        # pos_logits = (log_feats * pos_embs).sum(dim=-1)
+        # neg_logits = (log_feats * neg_embs).sum(dim=-1)
+        # pos_logits = pos_logits * loss_mask
+        # neg_logits = neg_logits * loss_mask
 
         if self.training:
             neg_embs = neg_embs.unsqueeze(1)
@@ -314,7 +324,7 @@ class BaselineModel(torch.nn.Module):
 
         
 
-    def predict(self, log_seqs, seq_feature, mask, distance='cosine'):
+    def predict(self, log_seqs, seq_feature, mask, seq_time, seq_action_type, distance='cosine'):
         """
         计算用户序列的表征
         Args:
@@ -324,7 +334,7 @@ class BaselineModel(torch.nn.Module):
         Returns:
             final_feat: 用户序列的表征，形状为 [batch_size, hidden_units]
         """
-        log_feats = self.log2feats(log_seqs, mask, seq_feature)
+        log_feats = self.log2feats(log_seqs, mask, seq_feature, seq_time, seq_action_type)
 
         final_feat = log_feats[:, -1, :]
         if distance == 'cosine':
@@ -355,7 +365,7 @@ class BaselineModel(torch.nn.Module):
 
             batch_feat = np.array(batch_feat, dtype=object)
 
-            batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False).squeeze(0)
+            batch_emb = self.feat2emb(item_seq, [batch_feat], include_user=False, fusion=True).squeeze(0)
 
             if distance == 'cosine':
                 batch_emb = F.normalize(batch_emb, p=2, dim=-1)

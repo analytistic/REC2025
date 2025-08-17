@@ -56,10 +56,7 @@ def get_args():
     parser.add_argument('--maxlen', default=101, type=int)
 
     # Baseline Model construction
-    parser.add_argument('--hidden_units', default=32, type=int)
-    parser.add_argument('--num_blocks', default=1, type=int)
     parser.add_argument('--num_epochs', default=3, type=int)
-    parser.add_argument('--num_heads', default=1, type=int)
     parser.add_argument('--dropout_rate', default=0.2, type=float)
     parser.add_argument('--l2_emb', default=0.0, type=float)
     parser.add_argument('--device', default='cuda', type=str)
@@ -185,9 +182,9 @@ def infer():
     user_list = []
     for step, batch in tqdm(enumerate(test_loader), total=len(test_loader)):
 
-        seq, token_type, seq_feat, user_id = batch
+        seq, token_type, seq_feat, user_id, seq_action_type, seq_time = batch
         seq = seq.to(args.device)
-        logits = model.predict(seq, seq_feat, token_type, distance=args.distance)
+        logits = model.predict(seq, seq_feat, token_type, seq_time, seq_action_type, distance=args.distance)
         for i in range(logits.shape[0]):
             emb = logits[i].unsqueeze(0).detach().cpu().numpy().astype(np.float32)
             all_embs.append(emb)

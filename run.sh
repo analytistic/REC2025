@@ -33,4 +33,4 @@
 # python -u main.py --loss_type infonce --device cpu
 # python -u main.py --loss_type infonce --device cpu
 # python -u main.py --loss_type cosine_triplet --device cpu --num_blocks 1 --num_heads 1 --hidden_units 32
-python -u main.py --loss_type ado_infonce --device cpu --num_blocks 1 --num_heads 1 --hidden_units 32 --num_epochs 60
+python -u main.py --loss_type ado_infonce --device cpu  --num_epochs 60

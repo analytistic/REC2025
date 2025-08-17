@@ -1,0 +1,27 @@
+[model]
+
+
+
+
+[model.emb]
+id_emb = 128
+feat_emb = 128
+pos_emb = 128
+dropout_rate = 0.2
+
+[model.encoder]
+maxlen = 101
+hidden_units = 128
+diff = 128
+num_experts = 1
+num_blocks = 2
+num_heads = 4
+dropout_rate = 0.2
+norm_first = false
+
+[model.senet]
+excitation_u = 16
+excitation_i = 32
+
+[model.fusion]
+hidden_units = 128

@@ -32,6 +32,9 @@ class NegSample(object):
 
         from_pos = int(cfg.from_pos * sample_num)
         from_neg = int(cfg.from_neg * sample_num)
+
+        if from_pos + from_neg == 0:
+            return neg_emb
         
         neg_emb_neg = torch.zeros((bs, from_neg, seq_len, dim), device=neg_emb.device) 
         neg_emb_pos = torch.zeros((bs, from_pos, seq_len, dim), device=pos_emb.device)

@@ -21,14 +21,13 @@ class GLUFeedForward(torch.nn.Module):
         self.W_v = torch.nn.Linear(hidden_units, hidden_units)
         self.W_o = torch.nn.Linear(hidden_units, out_units)
         self.act_u = torch.nn.SiLU()
-        self.act_v = torch.nn.SiLU()
         self.dropout1 = torch.nn.Dropout(p=droupout_rate)
         self.dropout2 = torch.nn.Dropout(p=droupout_rate)
         self.dropout = torch.nn.Dropout(p=droupout_rate)
 
     def forward(self, inputs):
-        u = self.act_u(self.dropout1(self.W_u(inputs)))
-        v = self.act_v(self.dropout2(self.W_v(inputs)))
+        u = self.act_u(self.W_u(inputs))
+        v = self.W_v(inputs)
         outputs = self.W_o(u * v)
         outputs = self.dropout(outputs)
         return outputs
@@ -127,20 +126,12 @@ class MoeFFN(torch.nn.Module):
 
 
 
-class LogEncoder(torch.nn.Module):
-    """
-   
-    """
+class TransformerEncoder(torch.nn.Module):
     def __init__(self, args):
-        super(LogEncoder, self).__init__()
+        super(TransformerEncoder, self).__init__()
         self.args = args
 
-
-        self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
-        self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
-        self.cross_fusion = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
-
-        self.attention_layernorms = torch.nn.ModuleList()  # to be Q for self-attention
+        self.attention_layernorms = torch.nn.ModuleList()  
         self.attention_layers = torch.nn.ModuleList()
         self.forward_layernorms = torch.nn.ModuleList()
         self.forward_layers = torch.nn.ModuleList()
@@ -151,7 +142,7 @@ class LogEncoder(torch.nn.Module):
 
             new_attn_layer = FlashMultiHeadAttention(
                 args.hidden_units, args.num_heads, args.dropout_rate
-            )  # 优化：用FlashAttention替代标准Attention
+            )
             self.attention_layers.append(new_attn_layer)
 
             new_fwd_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
@@ -173,48 +164,120 @@ class LogEncoder(torch.nn.Module):
         self.forward_layers.append(last_fwd_layer)
 
         self.last_layernorm = torch.nn.RMSNorm(args.hidden_units, eps=1e-8)
-        self.output_linear = torch.nn.Linear(2 * args.hidden_units, args.hidden_units, bias=False)
+    
+    def forward(self, q, k, v, mask=None):
+        ones_matrix = torch.ones((q.shape[1], k.shape[1]), device=q.device, dtype=torch.bool)
+        attention_mask_tril = torch.tril(ones_matrix)
 
-    def forward(self, seqs, mask, scale):
+        attention_mask_pad = (mask != 0).to(q.device)
+        attention_mask = attention_mask_tril.unsqueeze(0) & attention_mask_pad.unsqueeze(1)
+
+        for i in range(len(self.attention_layers)):
+            if self.args.norm_first:
+                x = self.attention_layernorms[i](q)
+                mha_outputs, _ = self.attention_layers[i](q, k, v, attn_mask=attention_mask)
+                q = q + mha_outputs
+                q = q + self.forward_layers[i](self.forward_layernorms[i](q))
+            else:
+                mha_outputs, _ = self.attention_layers[i](q, k, v, attn_mask=attention_mask)
+                q = self.attention_layernorms[i](q + mha_outputs)
+                q = self.forward_layernorms[i](q + self.forward_layers[i](q))
+        log_feats = self.last_layernorm(q)
+        return log_feats
+
+class LogEncoder(torch.nn.Module):
+    """
+   
+    """
+    def __init__(self, args, fusion_module):
+        super(LogEncoder, self).__init__()
+        self.args = args
+
+        self.act_emb = torch.nn.Embedding(2, args.hidden_units, padding_idx=0)
+        self.time_stamp_emb = torch.nn.ModuleDict(
+            {
+                "hour": torch.nn.Embedding(25, args.hidden_units, padding_idx=0),
+                "day": torch.nn.Embedding(32, args.hidden_units, padding_idx=0),
+                "month": torch.nn.Embedding(13, args.hidden_units, padding_idx=0),
+                "minute": torch.nn.Embedding(61, args.hidden_units, padding_idx=0),
+            }
+        )
+
+
+        self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
+        self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
+        self.cross_fusion1 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
+        self.cross_fusion2 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
+        self.id_encoder = TransformerEncoder(args)
+        self.feat_encoder = TransformerEncoder(args)
+        self.fusion_module = fusion_module
+
+
+    def forward(self, id_seqs, feat_seqs, mask, seq_time, seq_action_type, scale):
         """
         Args:
-            seqs: 序列的Embedding，形状为 [batch_size, maxlen, hidden_units]
-            mask: 序列的mask，形状为 [batch_size, maxlen]
+            id_seqs: 序列ID
+            feat_seqs: 序列特征list，每个元素为当前时刻的特征字典
+            mask: token类型掩码，1表示item token，2表示user token
+            seq_time: 序列时间特征
+            seq_action_type: 序列动作类型
+            scale: 缩放因子，用于缩放输入的ID和特征序列
 
 
         Returns:
             seqs_emb: 序列的Embedding，形状为 [batch_size, maxlen, hidden_units]
         """
-        batch_size, maxlen, _ = seqs.shape
-        seqs *= scale
-        poss = torch.arange(1, maxlen + 1, device=seqs.device).unsqueeze(0).expand(batch_size, -1).clone()
-        poss *= (mask != 0).long().to(seqs.device)
+        batch_size, maxlen, _ = id_seqs.shape
+
+        id_seqs *= scale
+
+        id_seqs *= scale
+        feat_seqs *= scale
+        poss = torch.arange(1, maxlen + 1, device=id_seqs.device).unsqueeze(0).expand(batch_size, -1).clone()
+        poss *= (mask != 0).long().to(id_seqs.device)
+
+
+        # hour = (seq_time // 3600) % 24 + 1
+        # day = (seq_time // 86400) % 31 + 1
+        # month = (seq_time // (86400 * 30)) % 12 + 1
+        # minute = (seq_time // 60) % 60
+
+        pad_mask = (seq_time == 0)
+        hour = ((seq_time // 3600) % 24 + 1).masked_fill(pad_mask, 0).to(id_seqs.device)
+        day = ((seq_time // 86400) % 31 + 1).masked_fill(pad_mask, 0).to(id_seqs.device)
+        month = ((seq_time // (86400 * 30)) % 12 + 1).masked_fill(pad_mask, 0).to(id_seqs.device)
+        minute = ((seq_time // 60) % 60 + 1).masked_fill(pad_mask, 0).to(id_seqs.device)
+
+        hour_emb = self.time_stamp_emb["hour"](hour)
+        day_emb = self.time_stamp_emb["day"](day)
+        month_emb = self.time_stamp_emb["month"](month)
+        minute_emb = self.time_stamp_emb["minute"](minute)
+
+        act_emb = self.act_emb(seq_action_type.to(id_seqs.device))
+
+        poss = self.pos_emb(poss)
+        poss = hour_emb + day_emb + month_emb + minute_emb  + poss + act_emb
+
+  
         user_index = torch.clamp((mask == 1).float().argmax(dim=1)-1, min=0)
-        user_feat = seqs[torch.arange(batch_size, device=seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
-        seqs = self.cross_fusion(user_feat, seqs)
-        # cross_seqs *= scale
-        # seqs = seqs + cross_seqs
-        seqs += self.pos_emb(poss) 
-        seqs = self.emb_dropout(seqs)
+        user_feat = feat_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
+        user_id = id_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
+        user_feat = self.emb_dropout(user_feat)
+        feat_seqs = self.emb_dropout(feat_seqs)
 
-        ones_matrix = torch.ones((maxlen, maxlen), device=seqs.device, dtype=torch.bool)
-        attention_mask_tril = torch.tril(ones_matrix)
 
-        attention_mask_pad = (mask != 0).to(seqs.device)
-        attention_mask = attention_mask_tril.unsqueeze(0) & attention_mask_pad.unsqueeze(1)
+        id_seqs = self.cross_fusion1(user_id, id_seqs) + poss
+        feat_seqs = self.cross_fusion2(user_feat, feat_seqs) + poss
+        feat_seqs = self.emb_dropout(feat_seqs) 
+        id_seqs = self.emb_dropout(id_seqs) 
 
-        for i in range(len(self.attention_layers)):
-            if self.args.norm_first:
-                x = self.attention_layernorms[i](seqs)
-                mha_outputs, _ = self.attention_layers[i](x, x, x, attn_mask=attention_mask)
-                seqs = seqs + mha_outputs
-                seqs = seqs + self.forward_layers[i](self.forward_layernorms[i](seqs))
-            else:
-                mha_outputs, _ = self.attention_layers[i](seqs, seqs, seqs, attn_mask=attention_mask)
-                seqs = self.attention_layernorms[i](seqs + mha_outputs)
-                seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
-        log_feats = self.last_layernorm(seqs)
-        log_feats = seqs
-        return log_feats
+        id_log = self.id_encoder(id_seqs, id_seqs, id_seqs, mask)
+        feat_log = self.feat_encoder(feat_seqs, feat_seqs, feat_seqs, mask)
+        log = self.fusion_module(id_log, feat_log)
+
+
+
+
+        return log
 
 

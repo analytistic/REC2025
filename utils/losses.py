@@ -75,7 +75,7 @@ class RecommendLoss(nn.Module):
 
 
     @staticmethod
-    def cosine_triplet_loss(log_feats, pos_embs, neg_embs, mask, cfg):
+    def cosine_triplet_loss(log_feats, pos_embs, neg_embs, mask, cfg, act_1_mask=None, act_0_mask=None):
         assert len(log_feats.shape) == 3 and len(pos_embs.shape) == 3 and len(neg_embs.shape) == 4
         if cfg.cosine_triplet.neg_embs_sample:
             neg_embs = NegSample.batch_neg_sample(cfg.cosine_triplet.use_neg_embs, pos_embs, neg_embs, mask, sample_num=cfg.cosine_triplet.use_neg_embs.sample_num)

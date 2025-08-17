@@ -1,8 +1,8 @@
 loss_type = "bce"
-sub_loss = ["infonce"]
+sub_loss = []
 
 [weight_loss]
-act = true
+act = false
 weight = [0.1, 0.9]
 
 

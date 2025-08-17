@@ -132,11 +132,12 @@ def get_cosine_schedule_with_warmup(optimizer, cfg, num_training_steps):
     """
     num_warmup_steps = cfg.warmup_steps 
     min_lr_ratio = cfg.min_lr_ratio
+    init_lr_ratio = cfg.init_lr_ratio
 
     
     def lr_lambda(current_step):
         if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
+            return init_lr_ratio + (1 - init_lr_ratio) * (current_step / max(1, num_warmup_steps))
         progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
         return max(min_lr_ratio, 0.5 * (1.0 + np.cos(np.pi * progress)))
     
