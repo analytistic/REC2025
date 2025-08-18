@@ -13,6 +13,8 @@ dropout_rate = 0.2
 maxlen = 101
 hidden_units = 128
 dropout_rate = 0.2
+interval_k = 512
+
 
 [model.encoder.id_encoder]
 maxlen = 101
@@ -22,7 +24,9 @@ num_experts = 1
 num_blocks = 2
 num_heads = 4
 dropout_rate = 0.2
-norm_first = false
+ffn_dropout_rate = 0.2
+norm_first = true
+
 
 [model.encoder.feat_encoder]
 maxlen = 101
@@ -32,7 +36,9 @@ num_experts = 1
 num_blocks = 4
 num_heads = 4
 dropout_rate = 0.2
-norm_first = false
+ffn_dropout_rate = 0.2
+norm_first = true
+
 
 [model.senet]
 excitation_u = 16

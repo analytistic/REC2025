@@ -117,7 +117,7 @@ class MyDataset(torch.utils.data.Dataset):
         for record_tuple in user_sequence:
             u, i, user_feat, item_feat, action_type, time_stamp = record_tuple
             if u and user_feat:
-                ext_user_sequence.insert(0, (u, user_feat, 2, action_type, time_stamp))
+                ext_user_sequence.insert(0, (u, user_feat, 2, action_type, int(0)))
             if i and item_feat:
                 ext_user_sequence.append((i, item_feat, 1, action_type, time_stamp))
 

@@ -15,7 +15,7 @@ from tqdm import tqdm
 from dataset import MyDataset
 from model import BaselineModel
 from config import BaseConfig
-from utils import evaluate_metrics, log_gradient_stats, clip_gradients, get_optim, get_cosine_schedule_with_warmup
+from utils import evaluate_metrics, log_gradient_stats, clip_gradients, get_optim, get_cosine_schedule_with_warmup, init_model_weights
 
 import random
 import numpy as np
@@ -31,8 +31,8 @@ def set_seed(seed):
 
 set_seed(3407) 
 
-# from dotenv import load_dotenv
-# load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
+from dotenv import load_dotenv
+load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
 
 
 def get_args():
@@ -50,7 +50,7 @@ def get_args():
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--inference_only', action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
-    parser.add_argument('--norm_first', action='store_true')
+    parser.add_argument('--norm_first', default=True)
     parser.add_argument('--loss_type', default='bce', type=str, choices=['infonce', 'bce', 'bpr', 'cosine_triplet', 'triplet', 'inbatch_infonce', 'ado_infonce'])
 
     # MMemb Feature ID
@@ -89,23 +89,24 @@ if __name__ == '__main__':
 
     model = BaselineModel(usernum, itemnum, feat_statistics, feat_types, cfg).to(args.device)
 
-    for name, param in model.named_parameters():
-        try:
-            torch.nn.init.xavier_normal_(param.data)
-        except Exception:
-            pass
+    # for name, param in model.named_parameters():
+    #     try:
+    #         torch.nn.init.xavier_normal_(param.data)
+    #     except Exception:
+    #         pass
 
-    model.logencoder.pos_emb.weight.data[0, :] = 0
-    model.item_emb.weight.data[0, :] = 0
-    model.user_emb.weight.data[0, :] = 0
-    model.logencoder.time_stamp_emb['hour'].weight.data[0, :] = 0
-    model.logencoder.time_stamp_emb['day'].weight.data[0, :] = 0
-    model.logencoder.time_stamp_emb['month'].weight.data[0, :] = 0
-    model.logencoder.time_stamp_emb['minute'].weight.data[0, :] = 0
-    model.logencoder.act_emb.weight.data[0, :] = 0
+    # model.logencoder.pos_emb.weight.data[0, :] = 0
+    # model.item_emb.weight.data[0, :] = 0
+    # model.user_emb.weight.data[0, :] = 0
+    # model.logencoder.time_stamp_emb['hour'].weight.data[0, :] = 0
+    # model.logencoder.time_stamp_emb['day'].weight.data[0, :] = 0
+    # model.logencoder.time_stamp_emb['month'].weight.data[0, :] = 0
+    # model.logencoder.time_stamp_emb['minute'].weight.data[0, :] = 0
+    # model.logencoder.act_emb.weight.data[0, :] = 0
 
-    for k in model.sparse_emb:
-        model.sparse_emb[k].weight.data[0, :] = 0
+    # for k in model.sparse_emb:
+    #     model.sparse_emb[k].weight.data[0, :] = 0
+    init_model_weights(model)
 
     epoch_start_idx = 1
 
@@ -279,9 +280,9 @@ if __name__ == '__main__':
             writer.add_scalar(f'Acc/valid_{k}', batch_acc_k[k], global_step)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
         writer.add_scalar('Loss/valid_bce', valid_bce_sum, global_step)
-        save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(model.state_dict(), save_dir / "model.pt")
+        # save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}")
+        # save_dir.mkdir(parents=True, exist_ok=True)
+        # torch.save(model.state_dict(), save_dir / "model.pt")
 
         temp_save_dir = Path(os.environ.get('USER_CACHE_PATH'), f"temp")
         if temp_save_dir.exists():

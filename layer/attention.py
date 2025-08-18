@@ -57,6 +57,79 @@ class FlashMultiHeadAttention(torch.nn.Module):
 
         return output, None
     
+class TimeIntervalAwareSelfAttention(torch.nn.Module):
+    def __init__(self, hidden_units, num_heads, dropout_rate, embeddings={}):
+        super(TimeIntervalAwareSelfAttention, self).__init__()
+        self.hidden_units = hidden_units
+        self.num_heads = num_heads
+        self.head_dim = hidden_units // num_heads
+        self.dropout_rate = dropout_rate
+
+        self.E_PK = embeddings["E_PK"]
+        self.E_PV = embeddings["E_PV"]
+        self.E_RK = embeddings["E_RK"]
+        self.E_RV = embeddings["E_RV"]
+
+        assert hidden_units % num_heads == 0, "hidden_units must be divisible by num_heads"
+
+        self.q_linear = torch.nn.Linear(hidden_units, hidden_units)
+        self.k_linear = torch.nn.Linear(hidden_units, hidden_units)
+        self.v_linear = torch.nn.Linear(hidden_units, hidden_units)
+        self.out_linear = torch.nn.Linear(hidden_units, hidden_units)
+
+    def forward(self, query, key, value, poss_seq, interval_seq, attn_mask=None):
+        batch_size, seq_len, _ = query.size()
+
+        # 计算Q, K, V
+        Q = self.q_linear(query) 
+        K = self.k_linear(key) + self.E_PK(poss_seq)
+        V = self.v_linear(value) + self.E_PV(poss_seq)
+
+        rel_emb_k = self.E_RK(interval_seq) # [B, L, L, H]
+        rel_emb_v = self.E_RV(interval_seq)
+
+        rel_emb_k = rel_emb_k.view(batch_size, seq_len, seq_len, self.num_heads, self.head_dim).permute(0, 3, 1, 2, 4) # [B, H, L, L, D]
+        rel_emb_v = rel_emb_v.view(batch_size, seq_len, seq_len, self.num_heads, self.head_dim).permute(0, 3, 1, 2, 4)
+
+        # reshape为multi-head格式
+        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # 计算位置注意力
+        attn_scores = torch.matmul(Q, K.transpose(-2, -1))
+
+        # 计算时间间隔注意力
+        q_expanded = Q.unsqueeze(3) # [B, H, L, 1, D]
+        rel_attn = torch.sum(q_expanded * rel_emb_k, dim=-1)  # [B, H, L, L]
+
+        attn_scores = (attn_scores + rel_attn) / (self.head_dim ** 0.5)
+
+        if attn_mask is not None:
+            attn_scores.masked_fill_(attn_mask.unsqueeze(1).logical_not(), float('-inf'))
+
+        attn_weights = F.softmax(attn_scores, dim=-1).masked_fill(~(attn_mask.unsqueeze(1)), 0.0)
+        attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
+
+        # 计算V
+        attn_output = torch.matmul(attn_weights, V)
+        attn_weights_expanded = attn_weights.unsqueeze(-1)  # [B, H, L, L, 1]
+        rel_attn_output = torch.sum(attn_weights_expanded * rel_emb_v, dim=3) # [B, H, L, D]
+
+        attn_output = (attn_output + rel_attn_output).transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_units)
+        attn_output = self.out_linear(attn_output)
+        attn_output = torch.where(attn_output.isnan(), 0, attn_output)  # 处理NaN
+        return attn_output, None
+  
+
+
+
+
+
+
+
+
+
 
 
 # class HierarchicalSequentialTransductionUnit(torch.nn.Module):

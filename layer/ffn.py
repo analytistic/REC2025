@@ -9,8 +9,6 @@ class GLUFeedForward(torch.nn.Module):
         self.W_v = torch.nn.Linear(hidden_units, hidden_units)
         self.W_o = torch.nn.Linear(hidden_units, out_units)
         self.act_u = torch.nn.SiLU()
-        self.dropout1 = torch.nn.Dropout(p=droupout_rate)
-        self.dropout2 = torch.nn.Dropout(p=droupout_rate)
         self.dropout = torch.nn.Dropout(p=droupout_rate)
 
     def forward(self, inputs):
