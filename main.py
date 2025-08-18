@@ -31,8 +31,8 @@ def set_seed(seed):
 
 set_seed(3407) 
 
-from dotenv import load_dotenv
-load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
+# from dotenv import load_dotenv
+# load_dotenv('/Users/alex/project/Rec/rec_2025_rebuild/base.env') 
 
 
 def get_args():
@@ -270,6 +270,7 @@ if __name__ == '__main__':
 
                 valid_loss_sum += main_loss.item()
                 valid_bce_sum += bce_loss.item()
+                del main_loss, bce_loss, log_feats, pos_embs, candidate_item, loss_mask
 
         valid_loss_sum /= len(valid_loader)
         valid_bce_sum /= len(valid_loader)

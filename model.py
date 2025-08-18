@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from dataset import save_emb
 
-from module import FlashMultiHeadAttention, PointWiseFeedForward, UserDnn, ItemDnn, LogEncoder, SeNet, EmbeddingFusionGate
+from module import LogEncoder, SeNet, EmbeddingFusionGate
 from utils import RecommendLoss
 from utils import NegSample
 

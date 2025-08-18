@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from .gater import Gatelayer
 from .emb_fusion import EmbeddingFusionGate
+from layer.attention import FlashMultiHeadAttention
+from layer.ffn import GLUFeedForward
 
 
 class CrossFeatFusion(torch.nn.Module):
@@ -14,96 +16,7 @@ class CrossFeatFusion(torch.nn.Module):
         fusion_emb = self.gate(user_emb, item_emb)
         return fusion_emb
 
-class GLUFeedForward(torch.nn.Module):
-    def __init__(self, hidden_units, out_units, droupout_rate):
-        super(GLUFeedForward, self).__init__()
-        self.W_u = torch.nn.Linear(hidden_units, hidden_units)
-        self.W_v = torch.nn.Linear(hidden_units, hidden_units)
-        self.W_o = torch.nn.Linear(hidden_units, out_units)
-        self.act_u = torch.nn.SiLU()
-        self.dropout1 = torch.nn.Dropout(p=droupout_rate)
-        self.dropout2 = torch.nn.Dropout(p=droupout_rate)
-        self.dropout = torch.nn.Dropout(p=droupout_rate)
 
-    def forward(self, inputs):
-        u = self.act_u(self.W_u(inputs))
-        v = self.W_v(inputs)
-        outputs = self.W_o(u * v)
-        outputs = self.dropout(outputs)
-        return outputs
-        
-
-
-class FlashMultiHeadAttention(torch.nn.Module):
-    def __init__(self, hidden_units, num_heads, dropout_rate):
-        super(FlashMultiHeadAttention, self).__init__()
-
-        self.hidden_units = hidden_units
-        self.num_heads = num_heads
-        self.head_dim = hidden_units // num_heads
-        self.dropout_rate = dropout_rate
-
-        assert hidden_units % num_heads == 0, "hidden_units must be divisible by num_heads"
-
-        self.q_linear = torch.nn.Linear(hidden_units, hidden_units)
-        self.k_linear = torch.nn.Linear(hidden_units, hidden_units)
-        self.v_linear = torch.nn.Linear(hidden_units, hidden_units)
-        self.out_linear = torch.nn.Linear(hidden_units, hidden_units)
-
-    def forward(self, query, key, value, attn_mask=None):
-        batch_size, seq_len, _ = query.size()
-
-        # 计算Q, K, V
-        Q = self.q_linear(query)
-        K = self.k_linear(key)
-        V = self.v_linear(value)
-
-        # reshape为multi-head格式
-        Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-
-        if hasattr(F, 'scaled_dot_product_attention'):
-            # PyTorch 2.0+ 使用内置的Flash Attention
-            attn_output = F.scaled_dot_product_attention(
-                Q, K, V, dropout_p=self.dropout_rate if self.training else 0.0, attn_mask=attn_mask.unsqueeze(1)
-            )
-        else:
-            # 降级到标准注意力机制
-            scale = (self.head_dim) ** -0.5
-            scores = torch.matmul(Q, K.transpose(-2, -1)) * scale
-
-            if attn_mask is not None:
-                scores.masked_fill_(attn_mask.unsqueeze(1).logical_not(), float('-inf'))
-
-            attn_weights = F.softmax(scores, dim=-1)
-            attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
-            attn_output = torch.matmul(attn_weights, V)
-
-        # reshape回原来的格式
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_units)
-
-        # 最终的线性变换
-        output = self.out_linear(attn_output)
-        output = attn_output
-
-        return output, None
-
-
-class PointWiseFeedForward(torch.nn.Module):
-    def __init__(self, hidden_units, out_units, dropout_rate):
-        super(PointWiseFeedForward, self).__init__()
-
-        self.conv1 = torch.nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
-        self.dropout1 = torch.nn.Dropout(p=dropout_rate)
-        self.act = torch.nn.GELU()
-        self.conv2 = torch.nn.Conv1d(hidden_units, out_units, kernel_size=1)
-        self.dropout2 = torch.nn.Dropout(p=dropout_rate)
-
-    def forward(self, inputs):
-        outputs = self.dropout2(self.conv2(self.act(self.dropout1(self.conv1(inputs.transpose(-1, -2))))))
-        outputs = outputs.transpose(-1, -2)  # as Conv1D requires (N, C, Length)
-        return outputs
     
 
 
@@ -206,10 +119,10 @@ class LogEncoder(torch.nn.Module):
 
         self.pos_emb = torch.nn.Embedding(2 * args.maxlen + 1, args.hidden_units, padding_idx=0)
         self.emb_dropout = torch.nn.Dropout(p=args.dropout_rate)
-        self.cross_fusion1 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
-        self.cross_fusion2 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
-        self.id_encoder = TransformerEncoder(args)
-        self.feat_encoder = TransformerEncoder(args)
+        # self.cross_fusion1 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
+        # self.cross_fusion2 = CrossFeatFusion(cat_dim=2*args.hidden_units, hidden_units=args.hidden_units)
+        self.id_encoder = TransformerEncoder(args.id_encoder)
+        self.feat_encoder = TransformerEncoder(args.feat_encoder)
         self.fusion_module = fusion_module
 
 
@@ -229,7 +142,6 @@ class LogEncoder(torch.nn.Module):
         """
         batch_size, maxlen, _ = id_seqs.shape
 
-        id_seqs *= scale
 
         id_seqs *= scale
         feat_seqs *= scale
@@ -259,17 +171,17 @@ class LogEncoder(torch.nn.Module):
         poss = hour_emb + day_emb + month_emb + minute_emb  + poss + act_emb
 
   
-        user_index = torch.clamp((mask == 1).float().argmax(dim=1)-1, min=0)
-        user_feat = feat_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
-        user_id = id_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
-        user_feat = self.emb_dropout(user_feat)
-        feat_seqs = self.emb_dropout(feat_seqs)
+        # user_index = torch.clamp((mask == 1).float().argmax(dim=1)-1, min=0)
+        # user_feat = feat_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
+        # user_id = id_seqs[torch.arange(batch_size, device=id_seqs.device), user_index, :].unsqueeze(1)  # [bs, 1, hidden_units]
+        # user_feat = self.emb_dropout(user_feat)
+        # feat_seqs = self.emb_dropout(feat_seqs)
 
 
-        id_seqs = self.cross_fusion1(user_id, id_seqs) + poss
-        feat_seqs = self.cross_fusion2(user_feat, feat_seqs) + poss
-        feat_seqs = self.emb_dropout(feat_seqs) 
-        id_seqs = self.emb_dropout(id_seqs) 
+        # id_seqs = self.cross_fusion1(user_id, id_seqs) + poss
+        # feat_seqs = self.cross_fusion2(user_feat, feat_seqs) + poss
+        feat_seqs = self.emb_dropout(feat_seqs+poss) 
+        id_seqs = self.emb_dropout(id_seqs+poss) 
 
         id_log = self.id_encoder(id_seqs, id_seqs, id_seqs, mask)
         feat_log = self.feat_encoder(feat_seqs, feat_seqs, feat_seqs, mask)

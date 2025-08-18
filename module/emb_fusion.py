@@ -11,9 +11,10 @@ class EmbeddingFusionGate(nn.Module):
 
 
     def forward(self, id_emb, feat_emb):
-        
-
-        g = torch.sigmoid(self.gate(torch.cat([id_emb, feat_emb], dim=-1)))
+        if self.training:
+            g = torch.sigmoid(self.gate(torch.cat([id_emb, feat_emb], dim=-1)) + (torch.rand_like(id_emb) * 0.2 - 0.1))  # 添加噪声
+        else:
+            g = torch.sigmoid(self.gate(torch.cat([id_emb, feat_emb], dim=-1)))
 
         output = id_emb * g + feat_emb * (1 - g)
 

@@ -8,17 +8,17 @@ l2_emb = 0.0
 num_workers = 0
 pin_memory = false
 
-# 混合精度训练配置
-use_amp = false                    # 是否启用自动混合精度
-amp_init_scale = 65536.0         # GradScaler初始缩放因子
-amp_growth_factor = 2.0          # 梯度缩放因子增长倍数
-amp_backoff_factor = 0.5         # 梯度缩放因子回退倍数
-amp_growth_interval = 2000       # 缩放因子更新间隔
+
+use_amp = false         
+amp_init_scale = 65536.0     
+amp_growth_factor = 2.0        
+amp_backoff_factor = 0.5         
+amp_growth_interval = 2000    
 
 [optimizer]
 # type = "adamw"
 type = "adamw"
-lr = 0.01
+lr = 0.001
 betas = [0.9, 0.98]
 weight_decay = 1e-4
 eps = 1e-8

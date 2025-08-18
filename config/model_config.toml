@@ -12,9 +12,24 @@ dropout_rate = 0.2
 [model.encoder]
 maxlen = 101
 hidden_units = 128
+dropout_rate = 0.2
+
+[model.encoder.id_encoder]
+maxlen = 101
+hidden_units = 128
 diff = 128
 num_experts = 1
 num_blocks = 2
+num_heads = 4
+dropout_rate = 0.2
+norm_first = false
+
+[model.encoder.feat_encoder]
+maxlen = 101
+hidden_units = 128
+diff = 128
+num_experts = 1
+num_blocks = 4
 num_heads = 4
 dropout_rate = 0.2
 norm_first = false
