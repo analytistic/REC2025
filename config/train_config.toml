@@ -18,7 +18,7 @@ amp_growth_interval = 2000
 [optimizer]
 # type = "adamw"
 type = "adamw"
-lr = 0.001
+lr = 0.01
 betas = [0.9, 0.98]
 weight_decay = 1e-4
 eps = 1e-8
